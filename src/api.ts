@@ -119,7 +119,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
 
         // Extract the last user message
         const lastUserMsg = [...data.messages].reverse().find(m => m.role === 'user');
-        if (!lastUserMsg || typeof lastUserMsg.content !== 'string' || lastUserMsg.content.length > 8192) {
+        if (!lastUserMsg || typeof lastUserMsg.content !== 'string' || (registry.policy && lastUserMsg.content.length > 8192)) {
           sendJson(res, 400, { error: 'No user message found' });
           return;
         }
