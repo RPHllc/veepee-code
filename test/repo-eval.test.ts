@@ -167,7 +167,7 @@ describe('commit-message quality gate', () => {
 });
 
 describe('blind mode withholds the assertions, not the API', () => {
-  it('names the exports a new module must provide, and nothing about behaviour', async () => {
+  it.skipIf(!existsSync('/home/vp/Dev/crosstown/.git'))('names the exports a new module must provide, and nothing about behaviour', async () => {
     // Reviewed by hand from a real sweep: a task implemented the described
     // behaviour correctly and failed on `TypeError: m.normalise is not a
     // function`. That is a coin toss over naming, not a capability — a person
@@ -191,7 +191,7 @@ describe('blind mode withholds the assertions, not the API', () => {
 });
 
 describe('task size is bounded by what the instrument can resolve', () => {
-  it('drops a commit too large for one blind run, and says why', async () => {
+  it.skipIf(!existsSync('/home/vp/Dev/crosstown/.git'))('drops a commit too large for one blind run, and says why', async () => {
     // crosstown@fc05e7a — 308 changed lines: a new maths module, a page rewrite
     // and a 121-line test suite. Measured: a full 30 minutes, 56 tool calls, it
     // wrote its own test file, never created the module the task was about, and

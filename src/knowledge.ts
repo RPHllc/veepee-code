@@ -37,7 +37,7 @@ export class KnowledgeState {
   private sessionId: string;
   private dirty = false;
 
-  constructor(sessionId: string) {
+  constructor(sessionId: string, private readonly ephemeral = false) {
     this.sessionId = sessionId;
     this.data = {
       project: '',
@@ -234,7 +234,7 @@ export class KnowledgeState {
 
   /** Save knowledge state to disk alongside session */
   async save(): Promise<void> {
-    if (!this.dirty) return;
+    if (this.ephemeral || !this.dirty) return;
     await mkdir(SESSIONS_DIR, { recursive: true });
     const filePath = join(SESSIONS_DIR, `${this.sessionId}-state.md`);
     // Atomic — a torn state file is silently dropped on the next load.

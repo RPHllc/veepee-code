@@ -467,10 +467,10 @@ export class Agent {
     } else {
       this.ollama = new Ollama({ host: config.proxyUrl, headers: { "x-ollama-source": "vcode" } });
     }
-    this.context = new ContextManager();
+    this.context = new ContextManager(undefined, !!registry.policy);
     // The task list is this agent's own (API sessions each get an Agent but
     // share one registry); the registry only carries the tool's schema.
-    if (!registry.has(this.todoTool.name)) registry.register(buildTodoTool(new TodoList()));
+    if (!registry.policy && !registry.has(this.todoTool.name)) registry.register(buildTodoTool(new TodoList()));
     this.context.setExtraVolatile(() => this.todos.contextBlock());
     this.modelManager = modelManager;
     this.registry = registry;
@@ -487,8 +487,10 @@ export class Agent {
     // A subagent of a working agent can always run where its parent runs.
     this.subAgents.setDefaultModel(modelManager.getCurrentModel());
 
-    this.loadBenchmarkContextSizes();
-    this.loadRoster();
+    if (!registry.policy) {
+      this.loadBenchmarkContextSizes();
+      this.loadRoster();
+    }
   }
 
   /** Load the model roster from benchmark results */
@@ -981,6 +983,7 @@ export class Agent {
   ): AsyncGenerator<AgentEvent> {
     if (this.runLock) throw new AgentBusyError();
     this.runLock = true;
+    this.registry?.beginRun();
     this.checkpointedThisTurn = false;
     return this.withRunLock(this._run(userMessage, options));
   }
@@ -1121,7 +1124,9 @@ export class Agent {
   ): AsyncGenerator<AgentEvent> {
     this._runResult = null;
     const permissionMode = options?.permissionMode || 'interactive';
-    const allowedTools = options?.allowedTools ? new Set(options.allowedTools) : null;
+    const allowedTools = this.registry.policy
+      ? new Set(this.registry.policy.intersect(options?.allowedTools))
+      : options?.allowedTools ? new Set(options.allowedTools) : null;
     const onTurnBoundary = options?.onTurnBoundary;
     this.abortController = new AbortController();
 
@@ -1137,10 +1142,10 @@ export class Agent {
     yield* this._fireHooks('UserPromptSubmit', { prompt: userMessage, cwd: process.cwd() });
 
     // Expand @file mentions — read files and append content
-    const expandedMessage = await this.expandFileMentions(userMessage);
+    const expandedMessage = this.registry.policy ? userMessage : await this.expandFileMentions(userMessage);
 
     // Detect images in message and switch to vision model if needed
-    const images = await this.extractImages(expandedMessage);
+    const images = this.registry.policy ? [] : await this.extractImages(expandedMessage);
     let visionModelSwitch: string | null = null;
     if (images.length > 0) {
       const visionModel = this.findVisionModel();
@@ -1158,7 +1163,7 @@ export class Agent {
     // model (Claude Code's contract), e.g. memory recalled for this project.
     if (!this.sessionStarted) {
       this.sessionStarted = true;
-      const started = await runHooks('SessionStart', { cwd: process.cwd() } as never);
+      const started = this.registry.policy ? [] : await runHooks('SessionStart', { cwd: process.cwd() } as never);
       const context = started.filter(r => r.exitCode === 0 && r.stdout.trim()).map(r => r.stdout.trim()).join('\n\n');
       if (context) {
         this.context.addUser(`[SYSTEM] Session context from SessionStart hooks:\n${context}`);
@@ -1273,8 +1278,9 @@ export class Agent {
         yield { type: 'info', content: notice.slice(0, 120) };
       }
 
-      if (turn >= MAX_TURNS_PER_MESSAGE) {
-        yield { type: 'error', error: `Stopped: ${MAX_TURNS_PER_MESSAGE} turns on one message without finishing. The work so far is kept — send a narrower instruction to continue.` };
+      const turnLimit = this.registry.policy?.maxTurns ?? MAX_TURNS_PER_MESSAGE;
+      if (turn >= turnLimit) {
+        yield { type: 'error', error: `Stopped: ${turnLimit} turns on one message without finishing. The work so far is kept — send a narrower instruction to continue.` };
         this.abortController = null;
         return;
       }
@@ -1905,7 +1911,7 @@ export class Agent {
         const results = [...earlyResults, ...executed];
         for (const { idx, name, args, result } of results) {
           yield {
-            type: 'tool_result', name,
+            type: 'tool_result', name, args,
             success: result.success,
             content: result.success ? result.output : result.error,
             error: result.error,
@@ -1921,7 +1927,7 @@ export class Agent {
           const toolName = call.function.name;
           const toolArgs = (call.function.arguments || {}) as Record<string, unknown>;
 
-          if (allowedTools && !allowedTools.has(toolName) && toolName !== 'update_memory') {
+          if (allowedTools && !allowedTools.has(toolName) && (toolName !== 'update_memory' || this.registry.policy)) {
             const msg = `Tool "${toolName}" not allowed`;
             yield { type: 'tool_result', name: toolName, success: false, content: `Tool "${toolName}" is not in the allowed set for this request` };
             stepResults[i] = msg;
@@ -1987,6 +1993,7 @@ export class Agent {
           yield {
             type: 'tool_result',
             name: toolName,
+            args: toolArgs,
             success: result.success,
             content: result.success ? result.output : result.error,
             error: result.error,
@@ -2192,7 +2199,7 @@ export class Agent {
     event: HookEventName,
     payload: Record<string, unknown>,
   ): AsyncGenerator<AgentEvent, { blocked: boolean; reason?: string }> {
-    const results: HookExecResult[] = await runHooks(event, payload as never);
+    const results: HookExecResult[] = this.registry.policy ? [] : await runHooks(event, payload as never);
     for (const r of results) {
       const text = r.stdout || r.stderr;
       const blockedHere = event === 'PreToolUse' && r.exitCode !== 0;

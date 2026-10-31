@@ -206,13 +206,13 @@ function createHttpRequestTool(): ToolDef {
   };
 }
 
-function createWebSearchTool(searxngUrl: string): ToolDef {
+export function createWebSearchTool(searxngUrl: string): ToolDef {
   return {
     name: 'web_search',
     description: 'Search the web using SearXNG. Returns search results with titles, URLs, and snippets. Good for finding documentation, Stack Overflow answers, or current information.',
     schema: z.object({
-      query: z.string().describe('Search query'),
-      max_results: z.number().optional().describe('Maximum results to return (default 5)'),
+      query: z.string().trim().min(1).max(512).describe('Search query'),
+      max_results: z.number().int().min(1).max(10).optional().describe('Maximum results to return (default 5)'),
     }),
     execute: async (params) => {
       try {
@@ -220,21 +220,24 @@ function createWebSearchTool(searxngUrl: string): ToolDef {
         const base = searxngUrl.replace(/\/+$/, '');
         const url = `${base}/search?q=${encodeURIComponent(params.query as string)}&format=json&language=en`;
 
-        const res = await fetch(url, { signal: AbortSignal.timeout(15000), headers: { 'User-Agent': 'veepee-code/0.3' } });
+        const res = await fetch(url, { signal: AbortSignal.timeout(15000), redirect: 'error', headers: { 'User-Agent': 'veepee-code/0.3' } });
         if (!res.ok) return fail(`Search API returned ${res.status}`);
 
-        const data = await res.json() as { results: Array<{ title: string; url: string; content: string }> };
-        const results = (data.results || []).slice(0, maxResults);
+        const data = JSON.parse(await readCapped(res, 256 * 1024)) as { results: Array<{ title: string; url: string; content: string }> };
+        if (!Array.isArray(data.results)) return fail('Invalid search response');
+        const results = data.results.filter(r => {
+          try { const u = new URL(r.url); return ['http:', 'https:'].includes(u.protocol) && !u.username && !u.password; } catch { return false; }
+        }).slice(0, maxResults);
 
         if (results.length === 0) return ok('No results found.');
 
         const output = results
-          .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.content || '(no snippet)'}`)
+          .map((r, i) => `${i + 1}. ${String(r.title || '').slice(0, 300)}\n   ${r.url.slice(0, 2048)}\n   ${String(r.content || '(no snippet)').slice(0, 2000)}`)
           .join('\n\n');
 
         return ok(output);
       } catch (err) {
-        return fail(`Search failed: ${(err as Error).message}`);
+        return fail('Search failed: unavailable or invalid bounded response');
       }
     },
   };

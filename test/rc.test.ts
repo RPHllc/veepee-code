@@ -16,7 +16,7 @@ describe('the unauthenticated route list', () => {
   });
 
   it('never exempts anything but GET', () => {
-    expect(api).toContain("const skipAuth = req.method === 'GET' && RC_PUBLIC.has(reqPath);");
+    expect(api).toContain("const skipAuth = !registry.policy && req.method === 'GET' && RC_PUBLIC.has(reqPath);");
   });
 
   it('serves web assets from an allow-list, so no path can traverse', () => {

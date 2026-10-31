@@ -1,0 +1,25 @@
+name: Worker policy and build
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - name: Build and test pinned container environment
+        run: docker build --target test -f Dockerfile.worker .
+      - name: Build runtime
+        run: |
+          docker build --target runtime --build-arg VCS_REF=${{ env.SOURCE_SHA }} -f Dockerfile.worker -t vcode-research:${{ env.SOURCE_SHA }} .
+          docker image inspect vcode-research:${{ env.SOURCE_SHA }} --format '{{.Id}} {{.Architecture}} {{json .Config.Labels}}'
+          docker save vcode-research:${{ env.SOURCE_SHA }} | gzip > vcode-research-amd64.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vcode-research-amd64-${{ env.SOURCE_SHA }}
+          path: vcode-research-amd64.tar.gz
+          retention-days: 14
