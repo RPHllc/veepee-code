@@ -59,7 +59,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-    if (req.method === 'OPTIONS') {
+    if (req.method === 'OPTIONS' && !registry.policy) {
       res.writeHead(204);
       res.end();
       return;
@@ -139,7 +139,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
           if (agent.isRunning()) { sendBusy(res); return; }
           agent.clear();
           const timer = setTimeout(() => { agent.abort(); res.destroy(); }, registry.policy.deadlineMs);
-          const cleanup = () => { clearTimeout(timer); agent.abort(); };
+          const cleanup = () => { clearTimeout(timer); if (!res.writableFinished) agent.abort(); };
           res.once('close', cleanup);
           res.once('finish', () => clearTimeout(timer));
         }

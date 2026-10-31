@@ -116,6 +116,7 @@ describe('actual upstream Agent and HTTP API with mock inference', () => {
         expect((await fetch(h.url + path)).status).toBe(401);
         expect((await fetch(h.url + path, { headers: { authorization: 'Bearer incorrect' } })).status).toBe(401);
       }
+      expect((await fetch(h.url + '/health', { method: 'OPTIONS' })).status).toBe(401);
       expect((await fetch(h.url + '/api/execute', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: '{"tool":"web_search"}' })).status).toBe(403);
       for (const bad of [{ apiExecute: true }, { rcEnabled: true }, { apiToken: '' }, { teacher: { enabled: true } }]) {
         expect(() => startApiServer({ port: 0, agent: h.a, modelManager: h.m, registry: h.r, apiToken: token, ...bad } as any)).toThrow();
