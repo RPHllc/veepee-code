@@ -213,3 +213,26 @@ describe('inference failure deadline', () => {
     } finally { h.close(); }
   }, 10000);
 });
+
+describe('worker-only input bound', () => {
+  it('rejects oversized worker input before inference', async () => {
+    const h = await apiHarness();
+    try {
+      const response = await fetch(h.url + '/v1/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ messages: [{ role: 'user', content: 'x'.repeat(8193) }] }) });
+      expect(response.status).toBe(400);
+      expect(h.requests).toHaveLength(0);
+    } finally { h.close(); }
+  });
+  it('preserves ordinary upstream API input capacity', async () => {
+    const runSync = vi.fn(async () => ({ content: 'ok', toolCalls: [], errors: [], stuck: false }));
+    const api = startApiServer({ port: 0, registry: new ToolRegistry(), agent: { runSync } as any,
+      modelManager: { getCurrentModel: () => 'test-model' } as any });
+    await api.ready;
+    try {
+      const content = 'x'.repeat(9000);
+      const response = await fetch(`http://127.0.0.1:${api.port}/v1/chat/completions`, { method: 'POST', body: JSON.stringify({ messages: [{ role: 'user', content }] }) });
+      expect(response.status).toBe(200);
+      expect(runSync.mock.calls[0][0]).toBe(content);
+    } finally { api.close(); }
+  });
+});
