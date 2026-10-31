@@ -37,10 +37,16 @@ function teacherFrom(t: Config['teacher'] | undefined): TeacherConfig | null {
  *   GET  /api/status           — Session status
  *   POST /api/execute          — Execute a specific tool directly
  */
-export function startApiServer(config: ApiConfig): { port: number; connectionCount: number; close: () => void } {
+export function startApiServer(config: ApiConfig): { port: number; connectionCount: number; close: () => void; ready: Promise<void> } {
   const { agent, modelManager, registry } = config;
 
   const apiToken = config.apiToken || null;
+  if (registry.policy) {
+    if (!apiToken || apiToken.length < 32) throw new Error('Worker requires a 32+ character API token');
+    if (config.apiExecute || config.rcEnabled || config.rcRequestHandler || config.teacher?.enabled) {
+      throw new Error('Worker forbids direct execution, Remote Connect and teacher side effects');
+    }
+  }
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // CORS — allow any origin when RC is enabled, localhost only otherwise
@@ -69,7 +75,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
     // Everything that reads or changes state stays behind the check.
     const reqPath = req.url?.split('?')[0] || '';
     const RC_PUBLIC = new Set(['/rc', '/rc/', '/rc/app.js', '/rc/app.css', '/rc/stream']);
-    const skipAuth = req.method === 'GET' && RC_PUBLIC.has(reqPath);
+    const skipAuth = !registry.policy && req.method === 'GET' && RC_PUBLIC.has(reqPath);
     if (apiToken && !skipAuth) {
       const authHeader = req.headers.authorization || '';
       const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
@@ -100,6 +106,10 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
         };
 
         // Use specified model or current default
+        if (data.model && registry.policy && data.model !== modelManager.getCurrentModel()) {
+          sendJson(res, 400, { error: 'Worker model is pinned' });
+          return;
+        }
         if (data.model) {
           const profile = modelManager.getProfile(data.model);
           if (profile) {
@@ -109,7 +119,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
 
         // Extract the last user message
         const lastUserMsg = [...data.messages].reverse().find(m => m.role === 'user');
-        if (!lastUserMsg) {
+        if (!lastUserMsg || typeof lastUserMsg.content !== 'string' || lastUserMsg.content.length > 8192) {
           sendJson(res, 400, { error: 'No user message found' });
           return;
         }
@@ -121,6 +131,17 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
           clientToolNames = data.tools
             .map((t: any) => t?.function?.name)
             .filter(Boolean) as string[];
+        }
+        if (registry.policy) {
+          // Empty client list means no tools; omission retains only the server ceiling.
+          clientToolNames = registry.policy.intersect(data.tools === undefined ? null :
+            Array.isArray(data.tools) ? data.tools.map((t: any) => t?.function?.name).filter((n: unknown) => typeof n === 'string') : []);
+          if (agent.isRunning()) { sendBusy(res); return; }
+          agent.clear();
+          const timer = setTimeout(() => { agent.abort(); res.destroy(); }, registry.policy.deadlineMs);
+          const cleanup = () => { clearTimeout(timer); agent.abort(); };
+          res.once('close', cleanup);
+          res.once('finish', () => clearTimeout(timer));
         }
         if (data.stream) {
           // Claim the agent BEFORE committing response headers — once we've
@@ -231,6 +252,8 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
               };
               res.write(`data: ${JSON.stringify(chunk)}\n\n`);
               res.write('data: [DONE]\n\n');
+            } else if (event.type === 'error' && registry.policy) {
+              res.write(`data: ${JSON.stringify({ error: 'Worker inference/run failed', code: 'WORKER_RUN_FAILED' })}\n\n`);
             } else if (event.type === 'error' && _teacher) {
               const em = String(event.error || event.content || '');
               _outcomeErrors.push(em);
@@ -265,6 +288,10 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
           }
           throw err;
         }
+        if (registry.policy && result.errors.length) {
+          sendJson(res, 502, { error: 'Worker inference/run failed', code: 'WORKER_RUN_FAILED' });
+          return;
+        }
         const model = modelManager.getCurrentModel();
 
         // Build standard OpenAI tool_calls array
@@ -290,6 +317,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
             },
             finish_reason: 'stop',
           }],
+          ...(registry.policy ? { veepee_code: { tool_results: result.toolCalls.map(t => ({ name: t.name, success: t.success, output: t.result.slice(0, 4096) })) } } : {}),
           usage: {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -352,7 +380,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
 
       // Execute a tool directly — requires VEEPEE_CODE_API_EXECUTE=1 opt-in
       if (path === '/api/execute' && req.method === 'POST') {
-        if (!config.apiExecute) {
+        if (registry.policy || !config.apiExecute) {
           sendJson(res, 403, { error: '/api/execute is disabled. Set apiExecute to true in ~/.veepee-code/settings.json to enable.' });
           return;
         }
@@ -391,23 +419,29 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
       sendJson(res, 404, { error: 'Not found' });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      sendJson(res, 500, { error: msg });
+      sendJson(res, 500, { error: registry.policy ? 'Worker request failed' : msg });
     }
   });
 
   // Port hunting is bounded: an unbounded retry walks past 65535 and then spins
   // on EACCES/ERANGE forever. Any other bind error (EACCES, EADDRNOTAVAIL) used
   // to be swallowed silently, leaving a dead server nobody noticed — log it.
+  let readyResolve!: () => void;
+  let readyReject!: (err: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  void ready.catch(() => undefined);
+  server.once('listening', readyResolve);
   const MAX_PORT_ATTEMPTS = 20;
   let portAttempts = 0;
   server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE' && portAttempts < MAX_PORT_ATTEMPTS && config.port < 65535) {
+    if (!registry.policy && err.code === 'EADDRINUSE' && portAttempts < MAX_PORT_ATTEMPTS && config.port < 65535) {
       portAttempts++;
       config.port++;
       const bindHost = config.rcEnabled ? '0.0.0.0' : (config.host || '127.0.0.1');
       server.listen(config.port, bindHost);
       return;
     }
+    readyReject(err);
     console.error(`[api] server error (${err.code || 'unknown'}): ${err.message} — API server is not listening`);
   });
 
@@ -424,6 +458,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
   server.listen(config.port, bindHost);
 
   return {
+    ready,
     get port() {
       const address = server.address();
       return typeof address === 'object' && address ? address.port : config.port;

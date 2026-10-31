@@ -1,3 +1,4 @@
+import type { WorkerPolicy } from '../worker-policy.js';
 import type { Tool as OllamaTool } from 'ollama';
 import { TRUNCATED_ARGS_KEY } from '../openai-adapter.js';
 import type { ToolDef, ToolResult, ToolSource } from './types.js';
@@ -119,6 +120,12 @@ function describeArgError(name: string, args: Record<string, unknown>,
 const DEFAULT_TOOL_TIMEOUT_MS = 10 * 60_000;
 
 export class ToolRegistry {
+  constructor(readonly policy?: WorkerPolicy) {}
+
+  private policyCalls = 0;
+  /** Called only by the trusted agent after acquiring its per-run lock. */
+  beginRun(): void { this.policyCalls = 0; }
+
   private tools = new Map<string, ToolDef>();
   /** Registered but not sent to the model until tool_search activates them
    *  (see tool-search.ts). Still callable by name. */
@@ -140,6 +147,7 @@ export class ToolRegistry {
   }
 
   register(tool: ToolDef): void {
+    if (this.policy && this.tools.has(tool.name)) throw new Error(`Policy tool cannot be replaced: ${tool.name}`);
     this.tools.set(tool.name, tool);
   }
 
@@ -184,15 +192,15 @@ export class ToolRegistry {
   }
 
   list(): ToolDef[] {
-    return Array.from(this.tools.values());
+    return Array.from(this.tools.values()).filter(t => !this.policy || this.policy.allows(t.name));
   }
 
   names(): string[] {
-    return Array.from(this.tools.keys());
+    return this.list().map(t => t.name);
   }
 
   count(): number {
-    return this.tools.size;
+    return this.list().length;
   }
 
   /** Group tools by source for /tools listing. Local tools with no
@@ -224,6 +232,12 @@ export class ToolRegistry {
 
   /** Execute a tool by name with given arguments */
   async execute(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    if (this.policy && !this.policy.allows(name)) {
+      return { success: false, output: '', error: `Worker policy denied tool: ${name}` };
+    }
+    if (this.policy && ++this.policyCalls > this.policy.maxToolCalls) {
+      return { success: false, output: '', error: 'Worker tool-call budget exhausted' };
+    }
     const tool = this.tools.get(name);
     if (!tool) {
       return { success: false, output: '', error: `Unknown tool: ${name}` };
