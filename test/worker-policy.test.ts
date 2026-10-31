@@ -78,7 +78,7 @@ async function apiHarness(toolName = 'web_search') {
     if (hang) return;
     res.setHeader('Content-Type', 'text/event-stream');
     const hasResult = data.messages.some((m: any) => m.role === 'tool');
-    const delta = hasResult ? { content: 'Research complete' } : { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: toolName, arguments: '{}' } }] };
+    const delta = hasResult ? { content: 'Research complete' } : { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: toolName, arguments: '{"probe":"value"}' } }] };
     res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: hasResult ? 'stop' : 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
   });
   backend.listen(0, '127.0.0.1'); await once(backend, 'listening');
@@ -99,6 +99,14 @@ describe('actual upstream Agent and HTTP API with mock inference', () => {
       expect(result.toolCalls.some(t => t.name === name && !t.success)).toBe(true);
       expect(h.r.get(name)!.execute).not.toHaveBeenCalled();
       expect(h.requests[0].tools.map((t: any) => t.function.name)).toEqual(['web_search']);
+    } finally { h.close(); }
+  });
+  it('preserves executed arguments in result provenance', async () => {
+    const h = await apiHarness();
+    try {
+      const result = await h.a.runSync('test', { permissionMode: 'auto_allow' });
+      expect(result.toolCalls[0].args).toEqual({ probe: 'value' });
+      expect(result.toolCalls[0].success).toBe(true);
     } finally { h.close(); }
   });
   it('requires auth on all routes and disallows execute and RC even with valid auth', async () => {

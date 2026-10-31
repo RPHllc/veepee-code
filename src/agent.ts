@@ -1992,6 +1992,7 @@ export class Agent {
           yield {
             type: 'tool_result',
             name: toolName,
+            args: toolArgs,
             success: result.success,
             content: result.success ? result.output : result.error,
             error: result.error,
