@@ -77,8 +77,8 @@ async function apiHarness(toolName = 'web_search') {
     const data = JSON.parse(body); requests.push(data);
     if (hang) return;
     res.setHeader('Content-Type', 'text/event-stream');
-    const hasResult = data.messages.some((m: any) => m.role === 'tool');
-    const delta = hasResult ? { content: 'Research complete' } : { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: toolName, arguments: '{"probe":"value"}' } }] };
+    const hasResult = toolName === '__turn_limit__' ? false : data.messages.some((m: any) => m.role === 'tool');
+    const delta = hasResult ? { content: 'Research complete' } : { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: toolName, arguments: toolName === '__turn_limit__' ? JSON.stringify({ turn: requests.length }) : '{"probe":"value"}' } }] };
     res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: hasResult ? 'stop' : 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
   });
   backend.listen(0, '127.0.0.1'); await once(backend, 'listening');
@@ -234,5 +234,18 @@ describe('worker-only input bound', () => {
       expect(response.status).toBe(200);
       expect(runSync.mock.calls[0][0]).toBe(content);
     } finally { api.close(); }
+  });
+});
+
+
+describe('worker turn-limit diagnostic', () => {
+  it('reports the enforced policy limit, not the upstream 120-turn default', async () => {
+    const h = await apiHarness('__turn_limit__');
+    try {
+      const result = await h.a.runSync('test', { permissionMode: 'auto_allow' });
+      expect(result.errors.some(e => e.startsWith('Stopped: 8 turns'))).toBe(true);
+      expect(result.errors.join(' ')).not.toContain('120 turns');
+      expect(h.requests).toHaveLength(8);
+    } finally { h.close(); }
   });
 });

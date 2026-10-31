@@ -1278,8 +1278,9 @@ export class Agent {
         yield { type: 'info', content: notice.slice(0, 120) };
       }
 
-      if (turn >= (this.registry.policy?.maxTurns ?? MAX_TURNS_PER_MESSAGE)) {
-        yield { type: 'error', error: `Stopped: ${MAX_TURNS_PER_MESSAGE} turns on one message without finishing. The work so far is kept — send a narrower instruction to continue.` };
+      const turnLimit = this.registry.policy?.maxTurns ?? MAX_TURNS_PER_MESSAGE;
+      if (turn >= turnLimit) {
+        yield { type: 'error', error: `Stopped: ${turnLimit} turns on one message without finishing. The work so far is kept — send a narrower instruction to continue.` };
         this.abortController = null;
         return;
       }

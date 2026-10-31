@@ -1,3 +1,5 @@
+import { readBody, BodyIntakeTimeoutError, WORKER_BODY_TIMEOUT_MS } from './api-body.js';
+import type { WorkerReadiness } from './worker-readiness.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import type { Agent, AgentEvent } from './agent.js';
 import { AgentBusyError } from './agent.js';
@@ -14,6 +16,7 @@ interface ApiConfig {
   modelManager: ModelManager;
   registry: ToolRegistry;
   apiToken?: string | null; // optional auth token; if set, all requests must include it
+  workerReadiness?: () => Promise<WorkerReadiness>;
   apiExecute?: boolean; // enable /api/execute endpoint
   rcEnabled?: boolean; // enable Remote Connect (wider CORS, 0.0.0.0 bind)
   rcRequestHandler?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>;
@@ -95,9 +98,15 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
         if (handled) return;
       }
 
+      if (path === '/ready' && req.method === 'GET' && registry.policy && config.workerReadiness) {
+        const readiness = await config.workerReadiness();
+        sendJson(res, readiness.ready ? 200 : 503, readiness);
+        return;
+      }
+
       // OpenAI-compatible chat completions
       if (path === '/v1/chat/completions' && req.method === 'POST') {
-        const body = await readBody(req);
+        const body = await readBody(req, registry.policy ? WORKER_BODY_TIMEOUT_MS : undefined);
         const data = JSON.parse(body) as {
           model?: string;
           messages: Array<{ role: string; content: string }>;
@@ -385,7 +394,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
           return;
         }
 
-        const body = await readBody(req);
+        const body = await readBody(req, registry.policy ? WORKER_BODY_TIMEOUT_MS : undefined);
         const data = JSON.parse(body) as { tool: string; args: Record<string, unknown> };
 
         if (!data.tool) {
@@ -418,6 +427,12 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
 
       sendJson(res, 404, { error: 'Not found' });
     } catch (err) {
+      if (err instanceof BodyIntakeTimeoutError) {
+        res.setHeader('Connection', 'close');
+        res.once('finish', () => req.destroy());
+        sendJson(res, 408, { error: 'Request body intake timed out' });
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       sendJson(res, 500, { error: registry.policy ? 'Worker request failed' : msg });
     }
@@ -468,23 +483,6 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
     },
     close: () => server.close(),
   };
-}
-
-const MAX_BODY_SIZE = 1024 * 1024; // 1MB
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk: Buffer) => {
-      body += chunk.toString();
-      if (body.length > MAX_BODY_SIZE) {
-        req.destroy();
-        reject(new Error('Request body too large'));
-      }
-    });
-    req.on('end', () => resolve(body));
-    req.on('error', reject);
-  });
 }
 
 /** 409 for "a run is already in flight" — the shared agent takes one at a time. */

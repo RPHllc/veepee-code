@@ -39,6 +39,29 @@ from this API. A crash discards the job; Conductor integration/recovery is Phase
 event. Worker metadata reports actual tool result success independently of the
 model's prose. Search results are untrusted and can be incomplete or incorrect.
 
+`GET /health` is authenticated process liveness only: it does not contact DGX or
+SearXNG, and a locked synthetic model profile is not dependency evidence. Compose
+keeps this endpoint as its health check. Authenticated `GET /ready` separately
+probes the configured DGX `/v1/models` for the exact configured alias and the
+SearXNG `/search` JSON endpoint using a fixed bounded query. Both probes run in
+parallel under one 3-second deadline covering headers and bodies, reject redirects,
+and cap each response at 256 KiB. Concurrent readiness callers share the in-flight
+probe. It returns 200 only when both checks pass, otherwise 503 with dependency
+booleans and no raw errors, credentials or response bodies. It makes no generation
+request, model load or configuration change. Empty search results are valid JSON
+readiness; this is not proof that generation or every external engine succeeds.
+A later probe detects recovery without restarting or clearing the worker. Use
+readiness as an operator/dependency diagnostic, never as a restart trigger.
+
+Worker chat body intake has its own absolute 10-second deadline, starting after
+headers/authentication when body reading begins. Continuous byte trickling does
+not extend it. Timeout returns HTTP 408, closes the connection, cleans the intake
+listeners/timer and never invokes the agent. The policy execution deadline starts
+only after a complete body has been parsed and validated. Ordinary upstream API
+callers retain their existing intake timing. The turn-limit diagnostic uses the
+same effective limit as enforcement (8 for the current six-call worker policy,
+120 for ordinary upstream profiles).
+
 The search tool uses a fixed operator endpoint, rejects redirects, validates
 1–512 character queries and 1–10 results, streams at most 256 KiB, and bounds each
 returned title/URL/snippet. It does not fetch result URLs. Arbitrary fetch/HTTP

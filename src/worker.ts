@@ -1,3 +1,4 @@
+import { createWorkerReadiness } from './worker-readiness.js';
 /** Isolated headless entry point. Does not load desktop/project settings or plugins. */
 import { readFileSync, statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -46,7 +47,7 @@ export async function startWorker(env: NodeJS.ProcessEnv = process.env) {
   models.switchTo(settings.model);
   const agent = new Agent(config, registry, models, new PermissionManager());
   const api = startApiServer({ port: settings.apiPort, host: settings.apiHost,
-    agent, registry, modelManager: models, apiToken: token });
+    agent, registry, modelManager: models, apiToken: token, workerReadiness: createWorkerReadiness(settings) });
   await api.ready;
   return { api, agent, registry };
 }
