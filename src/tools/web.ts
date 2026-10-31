@@ -235,7 +235,7 @@ export function createWebSearchTool(searxngUrl: string): ToolDef {
           .map((r, i) => `${i + 1}. ${String(r.title || '').slice(0, 300)}\n   ${r.url.slice(0, 2048)}\n   ${String(r.content || '(no snippet)').slice(0, 2000)}`)
           .join('\n\n');
 
-        return ok(output);
+        return { ...ok(output), sources: results.map(r => r.url).filter(u => Buffer.byteLength(u) <= 512) };
       } catch (err) {
         return fail('Search failed: unavailable or invalid bounded response');
       }

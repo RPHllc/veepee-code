@@ -123,8 +123,15 @@ export class ToolRegistry {
   constructor(readonly policy?: WorkerPolicy) {}
 
   private policyCalls = 0;
+  private searchCache = new Map<string, Promise<ToolResult>>();
+  private inFlight = new Set<Promise<ToolResult>>();
+  readonly diagnostics = { tool_attempts: 0, actual_tool_calls: 0, cache_hits: 0, search_duration_ms: 0 };
+  async settle(): Promise<void> { await Promise.allSettled([...this.inFlight]); }
   /** Called only by the trusted agent after acquiring its per-run lock. */
-  beginRun(): void { this.policyCalls = 0; }
+  beginRun(): void {
+    this.policyCalls = 0; this.searchCache.clear();
+    Object.assign(this.diagnostics, { tool_attempts: 0, actual_tool_calls: 0, cache_hits: 0, search_duration_ms: 0 });
+  }
 
   private tools = new Map<string, ToolDef>();
   /** Registered but not sent to the model until tool_search activates them
@@ -232,6 +239,7 @@ export class ToolRegistry {
 
   /** Execute a tool by name with given arguments */
   async execute(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    if (this.policy) this.diagnostics.tool_attempts++;
     if (this.policy && !this.policy.allows(name)) {
       return { success: false, output: '', error: `Worker policy denied tool: ${name}` };
     }
@@ -272,8 +280,24 @@ export class ToolRegistry {
         return { success: false, output: '', error: describeArgError(name, coerced, parsed.error) };
       }
 
+      const cacheKey = this.policy && name === 'web_search'
+        ? JSON.stringify([name, parsed.data.query, parsed.data.max_results ?? 5]) : null;
+      if (cacheKey && this.searchCache.has(cacheKey)) {
+        this.diagnostics.cache_hits++;
+        return await this.searchCache.get(cacheKey)!;
+      }
+      const started = Date.now();
+      if (this.policy) this.diagnostics.actual_tool_calls++;
+      const rawCall = tool.execute(parsed.data as Record<string, unknown>);
+      this.inFlight.add(rawCall);
+      void rawCall.finally(() => this.inFlight.delete(rawCall)).catch(() => undefined);
+      const call = rawCall.then(result => {
+        if (this.policy && name === 'web_search') this.diagnostics.search_duration_ms += Date.now() - started;
+        if (!result.success && cacheKey) this.searchCache.delete(cacheKey);
+        return result;
+      }, error => { if (cacheKey) this.searchCache.delete(cacheKey); throw error; });
+      if (cacheKey) this.searchCache.set(cacheKey, call);
       const budget = tool.timeoutMs === undefined ? DEFAULT_TOOL_TIMEOUT_MS : tool.timeoutMs;
-      const call = tool.execute(parsed.data as Record<string, unknown>);
       if (budget === null) return await call;
 
       // Racing does not cancel the underlying work — tools that own a child
