@@ -275,3 +275,26 @@ describe('research receipt HTTP protocol with actual Agent and mock inference', 
     } finally { h.close(); }
   });
 });
+
+describe('research HTTP conflict codes', () => {
+  it('distinguishes busy, stale instance and retained identity conflicts over HTTP', async () => {
+    const h = await apiHarness('__hang__');
+    const { randomUUID } = await import('node:crypto');
+    const headers = { authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const post = (body: unknown) => fetch(h.url + '/v1/research/jobs', { method: 'POST', headers, body: JSON.stringify(body) });
+    try {
+      const status = await (await fetch(h.url + '/v1/research/status', { headers })).json() as any;
+      const request = { contract_version: 1, capability: 'research.web', task_id: randomUUID(), attempt_id: randomUUID(), correlation_id: randomUUID(), idempotency_key: randomUUID(), expected_worker_instance: status.worker_instance, query: 'docs', max_results: 3, deadline_seconds: 5 };
+      expect((await post(request)).status).toBe(202);
+      for (const [body, error_code] of [
+        [{ ...request, attempt_id: randomUUID(), idempotency_key: randomUUID() }, 'worker_busy'],
+        [{ ...request, expected_worker_instance: randomUUID() }, 'worker_instance_mismatch'],
+        [{ ...request, query: 'different' }, 'identity_conflict'],
+      ] as const) {
+        const response = await post(body);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ contract_version: 1, error_code });
+      }
+    } finally { h.a.abort(); h.close(); }
+  });
+});

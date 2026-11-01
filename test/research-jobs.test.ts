@@ -47,8 +47,8 @@ describe('job-scoped successful search reuse', () => {
 describe('ephemeral authenticated executor receipts', () => {
   it('reserves one job, supports idempotency, rejects identity conflicts and obsolete worker instances', async () => {
     const h = harness(); const req = h.req(); expect(h.jobs.submit(req).code).toBe(202);
-    expect(h.jobs.submit(req).code).toBe(200); expect(h.jobs.submit({ ...req, query: 'changed' }).code).toBe(409);
-    expect(h.jobs.submit(h.req()).code).toBe(409); expect(h.jobs.submit({ ...h.req(), expected_worker_instance: randomUUID() }).code).toBe(409);
+    expect(h.jobs.submit(req).code).toBe(200); expect(h.jobs.submit({ ...req, query: 'changed' })).toMatchObject({ code: 409, body: { contract_version: 1, error_code: 'identity_conflict' } });
+    expect(h.jobs.submit(h.req())).toMatchObject({ code: 409, body: { contract_version: 1, error_code: 'worker_busy' } }); expect(h.jobs.submit({ ...h.req(), expected_worker_instance: randomUUID() })).toMatchObject({ code: 409, body: { contract_version: 1, error_code: 'worker_instance_mismatch' } });
     expect(h.jobs.submit({ ...h.req(), deadline_seconds: 121 }).code).toBe(422);
     h.finish(); await tick(); const done = h.jobs.get(req.attempt_id)!;
     expect(done.status).toBe('completed'); expect(done.released).toBe(true); expect(done.tools[0].sources).toEqual(done.sources);
@@ -61,7 +61,7 @@ describe('ephemeral authenticated executor receipts', () => {
     const req = h.req(); h.jobs.submit(req);
     const ack = h.jobs.cancel(req.attempt_id, h.jobs.instance, 'cancelled').body as any;
     expect(ack.status).toBe('cancellation_requested'); expect(ack.released).toBe(false); expect(h.jobs.status().busy).toBe(true);
-    expect(h.jobs.cancel(req.attempt_id, randomUUID(), 'cancelled').code).toBe(409);
+    expect(h.jobs.cancel(req.attempt_id, randomUUID(), 'cancelled')).toMatchObject({ code: 409, body: { contract_version: 1, error_code: 'worker_instance_mismatch' } });
     resolve({ success: true, output: '', sources: [] }); await tick();
     expect(h.jobs.get(req.attempt_id)!.status).toBe('cancelled'); expect(h.jobs.get(req.attempt_id)!.released).toBe(true);
     expect(new ResearchJobs(h.a, h.r).get(req.attempt_id)).toBeNull();

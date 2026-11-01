@@ -52,3 +52,11 @@ separate inference/tool-loop repetition from network work. No cross-job cache.
 Behavioral tests use mock inference and controlled tool work; full upstream tests
 remain applicable. Local container/live DGX acceptance is recorded by the paired
 Conductor PR. It does not authorize replacing the production Phase 5A1 image.
+
+HTTP 409 responses now carry `contract_version: 1` and a stable `error_code`:
+`worker_busy`, `worker_instance_mismatch` or `identity_conflict`. The first two
+prove that this submission was not accepted. Identity conflicts may refer to
+retained or active work and must not be treated as ordinary busy rejection.
+Cancellation against a stale process also returns `worker_instance_mismatch`;
+this is not confirmation that the old execution stopped. Unknown/malformed codes
+and legacy prose-only errors are ambiguous to supervisors and must fail closed.
