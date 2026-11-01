@@ -15,7 +15,21 @@ Set `CODING_EVIDENCE_DIR` to preserve per-case `result.json`, command records, p
 
 ## Limited live-model evaluation
 
-`scripts/coding/evaluate.py` is an explicit opt-in, two-task evaluation against an operator-enrolled numeric inference endpoint. It uses only disposable synthetic repositories, the same sandbox and command process evidence, and independent patch-application oracles. It does not install dependencies, change inference settings, access production checkouts or invoke research services. Functional correctness and observed wall time are recorded separately. Exact live evaluation outcomes and final immutable image identities are recorded in the review PR and retained source/evidence manifests rather than inferred from synthetic inference or CI.
+`scripts/coding/evaluate.py` is an explicit opt-in, two-task evaluation against an operator-enrolled numeric inference endpoint. It uses only disposable synthetic repositories, the same sandbox and command process evidence, and independent patch-application oracles. It does not install dependencies, change inference settings, access production checkouts or invoke research services. Functional correctness and observed wall time are recorded separately. The two-task evaluation used source `33e2e3435ec48a1a31858bc796e0dfd09905bb15` on actual Linux ARM64 Docker Desktop, against the live DGX `Qwen/Qwen3.6-35B-A3B-FP8` advertised alias (model root `nvidia/Qwen3.6-35B-A3B-NVFP4`). Both completed, independently applied patches and passed external correctness oracles. No shared configuration was changed.
+
+| Task | Functional correctness | Observed wall seconds | Worker milliseconds | Model turns | Actual tools | Generation milliseconds |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Single-file addition repair | Passed | 15.049 | 14913 | 6 | 5 | 9723 |
+| Two-file addition/doubling repair | Passed | 16.663 | 16510 | 6 | 9 | 11142 |
+
+Each recorded four actual exit-zero command runs: model-requested unittest/syntax plus independent launcher final unittest/syntax validation. First SSE-event observations were 202–330 ms and 227–382 ms respectively; these are first protocol events, not a claim of time to first visible text token. This small synthetic evaluation demonstrates functionality, not general coding accuracy or production acceptance.
+
+Live-tested ARM64 immutable image IDs:
+
+- Agent: `sha256:fda74dd8362eedf8358ba560e61f271edab4ecd3aef159e5ef3604c66e3fd032`.
+- Executor: `sha256:b8a319bc6235cf4dbb4c91772dc5efe0d2e25bb72a5c6604430f00de6f7ca8d0`.
+
+Owner-only evidence is retained under `~/.local/share/conductor/diagnostics/phase5b-a/live-dgx-1/` (`summary.json`, both reports, per-task patch/commands/integrity manifest and synthetic base bundle). The final local 18-case suite passed in 91.592 seconds; its retained evidence is under `phase5b-a/linux-final/`. Final PR-head amd64 image identities and CI links are recorded in the PR and its downloaded source manifest, distinguishing them from these live-tested ARM64 images. A documentation-only follow-up does not change runtime sources.
 
 ## Review and activation boundary
 
