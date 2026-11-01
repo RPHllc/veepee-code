@@ -123,8 +123,17 @@ cleanup reports failed/cleanup_unconfirmed, not cancellation success.
 `recover --attempt` is one-shot reconciliation, not rescheduling. It binds the
 original protected profile/manifest, removes only that attempt's namespace and
 reports failed/interrupted with no success claim. In-progress command exit codes
-remain unknown. If an earlier final result exists it is returned idempotently;
-recovery does not fabricate a new pass or rerun tests. Missing repository object
+remain unknown. If an earlier final result exists its published bytes remain immutable; recovery
+checks referenced hashes and can finish a missing integrity manifest. Interrupted
+`.next` staging files are ignored, never promoted. Recovery does not fabricate a
+new pass or rerun tests. An exclusive owner-side attempt lock excludes a live
+launcher. Durable creation intents must all have acknowledged completion before
+resource deletion plus a final empty enumeration can confirm stopped execution.
+A missing/invalid journal or unacknowledged create remains `cleanup_unconfirmed`,
+including on legacy attempts and repeated empty listings. A late start of a known,
+confirmed-deleted container cannot resurrect it. Repeated recovery sweeps late
+resources but never silently upgrades the original uncertainty or rewrites a
+trustworthy published result. Missing repository object
 storage need not prevent cleanup. Preserve artifacts and original base objects
 until Conductor has independently accepted/rejected them.
 

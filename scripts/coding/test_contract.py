@@ -153,6 +153,7 @@ class ControlPlaneFailures(unittest.TestCase):
         name = o.prefix + "-agent"
         o.uncertain_creations = {name}
         o.resource_creation_uncertain = False
+        o.creation_quiescent = lambda: True
         o.checked = lambda args, **kwargs: b""
         self.assertFalse(o.stop_containers())
         calls = []
@@ -174,7 +175,9 @@ class ControlPlaneFailures(unittest.TestCase):
 
         class FakeLauncher:
             def __init__(self, *args):
-                pass
+                from unittest.mock import Mock
+
+                self.lock = Mock()
 
             def execute(self):
                 raise OSError("synthetic artifact failure after dispatch")
@@ -192,6 +195,164 @@ class ControlPlaneFailures(unittest.TestCase):
         self.assertTrue(value["dispatch_may_have_started"])
         self.assertIsNone(value["execution_started"])
         self.assertIsNone(value["execution_stopped"])
+
+
+class RecoveryPersistence(unittest.TestCase):
+    def setUp(self):
+        from launcher import Launcher
+
+        self.fixture = Contract()
+        self.fixture.setUp()
+        self.profile, self.job = self.fixture.profile, self.fixture.value
+        self.obj = Launcher(self.profile, self.job)
+        self.root = self.obj.artifacts
+        self.obj.lock.close()
+
+    def tearDown(self):
+        self.fixture.tearDown()
+
+    def recovery(self):
+        import contextlib, io
+        from unittest.mock import patch
+        from launcher import Launcher, recover
+
+        def docker(obj, args, **kwargs):
+            return 0, b"", {"stderr": "", "truncated": False}
+
+        output = io.StringIO()
+        with (
+            patch.object(Launcher, "docker", docker),
+            contextlib.redirect_stdout(output),
+        ):
+            code = recover(self.profile, self.job["attempt_id"])
+        return code, json.loads(output.getvalue())
+
+    def interrupt_write(self, name, value):
+        """SIGKILL after staging fsync, immediately before atomic publication."""
+        import subprocess, sys, time
+
+        marker = self.root / "staged.marker"
+        marker.unlink(missing_ok=True)
+        code = """
+import json,os,sys,time
+from pathlib import Path
+from launcher import Launcher
+obj=object.__new__(Launcher);obj.artifacts=Path(sys.argv[1])
+def pause(*args):
+ (obj.artifacts/'staged.marker').write_text('ready')
+ while True:time.sleep(.05)
+os.replace=pause
+obj.write(sys.argv[2],json.loads(sys.argv[3]))
+"""
+        child = subprocess.Popen(
+            [sys.executable, "-c", code, str(self.root), name, json.dumps(value)],
+            cwd=Path(__file__).parent,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(marker.exists())
+        finally:
+            child.kill()
+            child.wait(timeout=5)
+        self.assertTrue(list(self.root.glob("." + name + ".*.next")))
+
+    def test_interrupted_command_persistence_uses_only_published_ledger(self):
+        old = [
+            {
+                "command_id": "python_unittest",
+                "validation": False,
+                "termination_reason": "in_progress",
+                "exit_code": None,
+            }
+        ]
+        self.obj.write("commands.json", old)
+        self.interrupt_write(
+            "commands.json",
+            [{**old[0], "termination_reason": "exited", "exit_code": 0}],
+        )
+        (self.root / "commands.json.next").write_bytes(b"legacy partial write")
+        _, report = self.recovery()
+        self.assertEqual(report["commands"][0]["termination_reason"], "interrupted")
+        self.assertIsNone(report["commands"][0]["exit_code"])
+        self.assertTrue(report["execution_stopped"])
+        before = {p.name: p.read_bytes() for p in self.root.glob("*.json")}
+        self.assertEqual(self.recovery()[1], report)
+        self.assertEqual(
+            before, {p.name: p.read_bytes() for p in self.root.glob("*.json")}
+        )
+        self.assertEqual(
+            (self.root / "commands.json.next").read_bytes(), b"legacy partial write"
+        )
+
+    def test_interrupted_result_persistence_never_promotes_staged_success(self):
+        self.interrupt_write(
+            "result.json", {"state": "completed", "execution_stopped": True}
+        )
+        (self.root / "result.json.next").write_text('{"state":"completed"}')
+        _, report = self.recovery()
+        self.assertEqual(report["state"], "failed")
+        self.assertEqual(report["termination_reason"], "interrupted")
+        self.assertTrue(report["no_success_claim"])
+        self.assertEqual(self.recovery()[1], report)
+
+    def test_interrupted_manifest_persistence_preserves_published_result(self):
+        from contract import sha
+
+        # First make a valid published recovery result/ledger, then interrupt its
+        # manifest persistence. Recovery must finalize hashes without rewriting them.
+        _, report = self.recovery()
+        # Trusted published-completion fixture: this checks byte preservation,
+        # not real command execution (the Linux suite supplies process evidence).
+        report.update(
+            state="completed", termination_reason="completed", no_success_claim=False
+        )
+        self.obj.write("result.json", report)
+        result = (self.root / "result.json").read_bytes()
+        ledger = (self.root / "commands.json").read_bytes()
+        manifest = read_json(self.root / "artifacts.json", 65536)
+        manifest["result.json"] = sha(result)
+        (self.root / "artifacts.json").unlink()
+        self.interrupt_write("artifacts.json", manifest)
+        (self.root / "artifacts.json.next").write_bytes(b"partial")
+        code, repeated = self.recovery()
+        self.assertEqual(code, 0)
+        self.assertEqual(repeated, report)
+        self.assertEqual((self.root / "result.json").read_bytes(), result)
+        self.assertEqual((self.root / "commands.json").read_bytes(), ledger)
+        self.assertEqual(read_json(self.root / "artifacts.json", 65536), manifest)
+        self.assertEqual(manifest["result.json"], sha(result))
+        # Corrupted published evidence must be rejected, never repaired by overwrite.
+        (self.root / "commands.json").write_bytes(b"[] ")
+        with self.assertRaisesRegex(Rejected, "published_artifact_integrity"):
+            self.recovery()
+        self.assertEqual((self.root / "commands.json").read_bytes(), b"[] ")
+
+    def test_recovery_refuses_live_attempt_lock(self):
+        from launcher import open_attempt_lock
+
+        with open_attempt_lock(self.root):
+            with self.assertRaisesRegex(Rejected, "attempt_in_progress"):
+                self.recovery()
+        self.assertFalse((self.root / "result.json").exists())
+
+    def test_missing_or_pending_creation_journal_cannot_confirm_stop(self):
+        for state in (
+            None,
+            {"version": True, "pending": []},
+            {"version": 1, "pending": [{"id": "unacknowledged"}]},
+        ):
+            with self.subTest(state=state):
+                if state is None:
+                    (self.root / "creation-state.json").unlink(missing_ok=True)
+                else:
+                    self.obj.write("creation-state.json", state)
+                _, report = self.recovery()
+                self.assertEqual(report["termination_reason"], "cleanup_unconfirmed")
+                self.assertFalse(report["execution_stopped"])
+                for name in ("result.json", "artifacts.json", "commands.json"):
+                    (self.root / name).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

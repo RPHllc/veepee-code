@@ -159,6 +159,29 @@ python3 scripts/coding/launcher.py run --profile /protected/profile.json --reque
 python3 scripts/coding/launcher.py recover --profile /protected/profile.json --attempt '<canonical-attempt-uuid>'
 ```
 
+Artifact publication uses owner-only unique `.next` staging files, file fsync,
+atomic replacement and directory fsync. Recovery ignores interrupted staging bytes
+(including legacy fixed-name `.next` files); it never promotes them into evidence.
+A published result and its referenced artifacts are immutable during recovery.
+A missing final integrity manifest can be reconstructed only after checking the
+published artifact hashes; an inconsistent published manifest/artifact is rejected.
+
+An owner-side attempt file lock serializes launcher and recovery. Before every
+container/network/volume create, a creation intent is durably published in
+`creation-state.json`; only a successful Docker creation acknowledgment clears
+that exact intent. Attached execution is separate from acknowledged creation,
+including trusted collectors, so a real nonzero process exit is not mistaken for
+uncertain creation. A late start cannot resurrect an acknowledged object after
+confirmed deletion. These are local execution safeguards, not another scheduler.
+
+Recovery removes known resources and re-enumerates, but an empty list alone is
+**never** stop proof: a Docker CLI or queued daemon create may outlive the launcher.
+Missing/invalid journals, legacy attempts without a journal, or any unacknowledged
+creation retain `cleanup_unconfirmed` even if repeated listings are empty. No quiet
+period automatically clears this uncertainty. Repeated recovery still sweeps late
+resources and preserves the original unconfirmed result; external operator proof
+would be required to release such a fence. This phase adds no automatic override.
+
 Attempt directories are exclusive replay fences. A duplicate submission reports
 `attempt_already_exists` with unknown stop state, because the original may still
 be running; only explicit recovery may reconcile it. A different attempt is not an

@@ -6,6 +6,9 @@ recover: prove stopped execution after interruption; never infer successful comp
 """
 
 import argparse
+import fcntl
+import stat
+import uuid
 import base64
 import json
 import math
@@ -38,6 +41,28 @@ class Stopped(Exception):
     pass
 
 
+def open_attempt_lock(root):
+    """Serialize the owner launcher/recovery, not repository or model execution."""
+    fd = os.open(root / "attempt.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    stream = os.fdopen(fd, "r+b")
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+        ):
+            raise Rejected("unsafe_attempt_lock")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Rejected("attempt_in_progress")
+        return stream
+    except BaseException:
+        stream.close()
+        raise
+
+
 class Launcher:
     def __init__(self, profile, job):
         self.profile, self.job = profile, job
@@ -64,10 +89,14 @@ class Launcher:
         self.artifacts.mkdir(
             mode=0o700
         )  # Existing attempt is a fence, never overwritten/retried.
+        self.lock = open_attempt_lock(self.artifacts)
+        self.creation_state = {"version": 1, "pending": []}
+        self.write("creation-state.json", self.creation_state)
         self.write(
             "launch.json",
             {
                 "request": job,
+                "creation_journal_version": 1,
                 "profile_sha256": sha(canonical(profile)),
                 "source_images": [profile["agent_image"], profile["executor_image"]],
             },
@@ -89,14 +118,39 @@ class Launcher:
     def write(self, name, value):
         data = canonical(value) if not isinstance(value, bytes) else value
         path = self.artifacts / name
-        temp = path.with_suffix(path.suffix + ".next")
-        with temp.open("xb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temp.chmod(0o600)
-        temp.replace(path)
+        # Never reuse a predictable staging name left by an interrupted writer.
+        # Staging bytes are not evidence and are never promoted by recovery.
+        fd, temporary = tempfile.mkstemp(
+            prefix="." + name + ".", suffix=".next", dir=self.artifacts
+        )
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            directory = os.open(self.artifacts, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            # SIGKILL may leave this unique .next; it cannot block another write.
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
         return sha(data)
+
+    def creation_quiescent(self):
+        try:
+            value = read_json(self.artifacts / "creation-state.json", 65536)
+            return type(value.get("version")) is int and value == {
+                "version": 1,
+                "pending": [],
+            }
+        except Exception:
+            return False
 
     def capture(
         self,
@@ -176,10 +230,48 @@ class Launcher:
                 process.wait(timeout=3)
 
     def docker(self, args, **kwargs):
+        if args[0] == "run":
+            # Separate daemon creation acknowledgment from attached command output.
+            # A nonzero test/collector exit is not an unacknowledged creation.
+            name = args[args.index("--name") + 1]
+            detached = "-d" in args
+            created = self.docker(["create", *[arg for arg in args[1:] if arg != "-d"]])
+            if created[0]:
+                return created
+            return self.docker(
+                [
+                    "start",
+                    *([] if detached else ["--attach"]),
+                    *(["--interactive"] if "-i" in args else []),
+                    name,
+                ],
+                **kwargs,
+            )
+        creation = args[0] in ("run", "create") or args[:2] in (
+            ["network", "create"],
+            ["volume", "create"],
+        )
+        operation = None
+        if creation:
+            operation = {
+                "id": str(uuid.uuid4()),
+                "kind": args[0],
+                "name": args[args.index("--name") + 1]
+                if "--name" in args
+                else args[-1],
+            }
+            self.creation_state["pending"].append(operation)
+            # Publish and fsync BEFORE Popen. A surviving CLI or queued daemon call
+            # can outlive the launcher; missing acknowledgment stays a durable fence.
+            self.write("creation-state.json", self.creation_state)
         try:
-            return self.capture(
+            result = self.capture(
                 ["docker", "--context", self.profile["docker_context"], *args], **kwargs
             )
+            if creation and result[0] == 0:
+                self.creation_state["pending"].remove(operation)
+                self.write("creation-state.json", self.creation_state)
+            return result
         except (Stopped, TimeoutError):
             if self.capture_started:
                 if args[0] in ("run", "create") and "--name" in args:
@@ -742,6 +834,7 @@ class Launcher:
             )
             return (
                 not self.uncertain_creations
+                and self.creation_quiescent()
                 and not self.resource_creation_uncertain
                 and all(keep_holder and n == self.holder for n in after)
             )
@@ -906,20 +999,64 @@ class Launcher:
 def recover(profile, attempt):
     identifier(attempt)
     root = Path(profile["artifact_directory"]) / attempt
+    with open_attempt_lock(root):
+        return recover_locked(profile, attempt, root)
+
+
+def finalize_result(obj, report):
+    """Complete a missing manifest, but never rewrite published result/valid evidence."""
+    hashes = report["artifact_hashes"]
+    if not isinstance(hashes, dict) or any(
+        name not in ("commands.json", "patch.diff") for name in hashes
+    ):
+        raise Rejected("invalid_artifact_references")
+    for name, digest in hashes.items():
+        if sha((obj.artifacts / name).read_bytes()) != digest:
+            raise Rejected("published_artifact_integrity")
+    expected = {
+        **hashes,
+        "result.json": sha((obj.artifacts / "result.json").read_bytes()),
+        "launch.json": sha((obj.artifacts / "launch.json").read_bytes()),
+    }
+    path = obj.artifacts / "artifacts.json"
+    if path.exists():
+        if read_json(path, 65536) != expected:
+            raise Rejected("published_manifest_integrity")
+    else:
+        obj.write("artifacts.json", expected)
+    print(json.dumps(report))
+    return 0 if report["state"] == "completed" else 1
+
+
+def recover_locked(profile, attempt, root):
     manifest = read_json(root / "launch.json", 32768)
     if (
         manifest["profile_sha256"] != sha(canonical(profile))
         or manifest["request"]["attempt_id"] != attempt
     ):
         raise Rejected("recovery_binding")
-    if (root / "result.json").exists():
-        previous = read_json(root / "result.json", 1048576)
-        print(json.dumps(previous))
-        return 0 if previous["state"] == "completed" else 1
+    previous = (
+        read_json(root / "result.json", 1048576)
+        if (root / "result.json").exists()
+        else None
+    )
+    if previous is not None and any(
+        previous.get(k) != manifest["request"][k]
+        for k in (
+            "attempt_id",
+            "task_id",
+            "correlation_id",
+            "idempotency_key",
+            "repository",
+            "base_sha",
+        )
+    ):
+        raise Rejected("published_result_binding")
     # Build no scheduler state; reconstruct only exact namespace names recorded by
     # this trusted attempt. Container TTLs also bound execution after launcher SIGKILL.
     obj = object.__new__(Launcher)
     obj.profile = profile
+    obj.artifacts = root
     obj.job = manifest["request"]
     obj.b = obj.job["budgets"]
     obj.started = time.monotonic()
@@ -952,8 +1089,13 @@ def recover(profile, attempt):
         [prefix + "-inference"] if profile["inference_network"] is None else []
     )
     obj.volume = prefix + "-workspace"
-    # Missing networks/volumes are valid after partial setup. Verify actual absence.
-    stopped = True
+    # An empty listing cannot fence a surviving create CLI or queued daemon call.
+    # Only a durable empty creation journal under the exclusive attempt lock can.
+    stopped = (
+        type(manifest.get("creation_journal_version")) is int
+        and manifest["creation_journal_version"] == 1
+        and obj.creation_quiescent()
+    )
     for name in reversed(names):
         try:
             obj.remove(name)
@@ -966,6 +1108,30 @@ def recover(profile, attempt):
             word in meta["stderr"].lower() for word in ("not found", "no such")
         ):
             stopped = False
+    # Re-enumerate after removal. A start can only target an acknowledged existing
+    # container; confirmed deletion prevents late starts from resurrecting it.
+    remaining = (
+        obj.checked(
+            [
+                "ps",
+                "-a",
+                "--filter",
+                "label=vcode.coding.attempt=" + attempt,
+                "--format",
+                "{{.Names}}",
+            ],
+            cleanup=True,
+        )
+        .decode()
+        .splitlines()
+    )
+    stopped = stopped and not remaining and obj.creation_quiescent()
+    if previous is not None:
+        if previous.get("execution_stopped") and not stopped:
+            raise Rejected("cleanup_unconfirmed")
+        # Even a prior unconfirmed result is immutable; still sweep on every recovery
+        # so late containers can be removed, without upgrading uncertainty to proof.
+        return finalize_result(obj, previous)
     records = (
         read_json(root / "commands.json", 1048576)
         if (root / "commands.json").exists()
@@ -1061,7 +1227,10 @@ def main():
         DISPATCH_MAY_HAVE_STARTED = True
         raise Rejected("attempt_already_exists")
     DISPATCH_MAY_HAVE_STARTED = True
-    return launcher.execute()
+    try:
+        return launcher.execute()
+    finally:
+        launcher.lock.close()
 
 
 def entry():

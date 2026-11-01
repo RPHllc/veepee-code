@@ -184,6 +184,7 @@ class CodingLinux(unittest.TestCase):
             for name in (
                 "result.json",
                 "launch.json",
+                "creation-state.json",
                 "patch.diff",
                 "commands.json",
                 "artifacts.json",
@@ -626,6 +627,175 @@ class Test(unittest.TestCase):
                 for c in r["commands"]
             )
         )
+
+    def test_19_delayed_docker_create_and_start_across_recovery(self):
+        """Real Docker, gated host CLI; never production fault injection."""
+        self.setup_job("CASE:repair Fix add and test it.")
+        real_docker = shutil.which("docker")
+        for phase in ("create", "start"):
+            with self.subTest(phase=phase):
+                self.job["attempt_id"] = str(uuid.uuid4())
+                self.request.write_text(json.dumps(self.job))
+                prefix = "vcode-coding-" + self.job["attempt_id"]
+                marker, release, done = [
+                    self.root / (phase + suffix)
+                    for suffix in (".waiting", ".release", ".done")
+                ]
+                binary = self.root / (phase + "-bin")
+                binary.mkdir()
+                wrapper = binary / "docker"
+                wrapper.write_text(
+                    "#!"
+                    + sys.executable
+                    + "\n"
+                    + "import os,sys,time,json,subprocess\nfrom pathlib import Path\n"
+                    + f"phase={phase!r};marker=Path({str(marker)!r});release=Path({str(release)!r});done=Path({str(done)!r});real={real_docker!r}\n"
+                    + "args=sys.argv[1:]\n"
+                    + "if phase in args and any('-exec-' in a for a in args):\n"
+                    + " marker.write_text(json.dumps({'pid':os.getpid(),'args':args}))\n"
+                    + " deadline=time.monotonic()+30\n"
+                    + " while not release.exists() and time.monotonic()<deadline:time.sleep(.02)\n"
+                    + " if not release.exists():sys.exit(124)\n"
+                    + " p=subprocess.run([real,*args],capture_output=True)\n"
+                    + " done.write_text(json.dumps({'code':p.returncode,'stderr':p.stderr.decode(errors='replace')}))\n"
+                    + " try:sys.stdout.buffer.write(p.stdout);sys.stdout.buffer.flush()\n"
+                    + " except BrokenPipeError:pass\n"
+                    + " sys.exit(p.returncode)\n"
+                    + "os.execv(real,[real,*args])\n"
+                )
+                wrapper.chmod(0o700)
+                env = {
+                    **os.environ,
+                    "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+                }
+                child = subprocess.Popen(
+                    self.command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                )
+                try:
+                    deadline = time.monotonic() + 30
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(marker.exists(), "Docker gate was not reached")
+                    child.kill()
+                    child.communicate(timeout=5)
+                    command = [
+                        sys.executable,
+                        str(HERE / "launcher.py"),
+                        "recover",
+                        "--profile",
+                        str(self.profile),
+                        "--attempt",
+                        self.job["attempt_id"],
+                    ]
+                    first = subprocess.run(
+                        command, capture_output=True, text=True, timeout=30
+                    )
+                    report = json.loads(first.stdout)
+                    if phase == "create":
+                        self.assertFalse(report["execution_stopped"], report)
+                        self.assertEqual(
+                            report["termination_reason"], "cleanup_unconfirmed"
+                        )
+                        journal = json.loads(
+                            (
+                                self.artifacts
+                                / self.job["attempt_id"]
+                                / "creation-state.json"
+                            ).read_text()
+                        )
+                        self.assertTrue(journal["pending"])
+                    else:
+                        # Create was durably acknowledged. Removing that known object
+                        # makes a late start fail; it cannot create/resurrect a container.
+                        self.assertTrue(report["execution_stopped"], report)
+                    result_bytes = (
+                        self.artifacts / self.job["attempt_id"] / "result.json"
+                    ).read_bytes()
+                    release.touch()
+                    deadline = time.monotonic() + 15
+                    while not done.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(
+                        done.exists(), "Surviving Docker CLI did not finish"
+                    )
+                    acknowledgment = json.loads(done.read_text())
+                    if phase == "create":
+                        self.assertEqual(acknowledgment["code"], 0, acknowledgment)
+                        # It really appeared AFTER recovery returned, not a mocked list.
+                        self.assertIn(
+                            prefix + "-exec-",
+                            docker("ps", "-a", "--format", "{{.Names}}"),
+                        )
+                    else:
+                        self.assertNotEqual(acknowledgment["code"], 0)
+                    second = subprocess.run(
+                        command, capture_output=True, text=True, timeout=30
+                    )
+                    self.assertEqual(json.loads(second.stdout), report)
+                    self.assertEqual(
+                        (
+                            self.artifacts / self.job["attempt_id"] / "result.json"
+                        ).read_bytes(),
+                        result_bytes,
+                    )
+                    self.assertEqual(
+                        docker(
+                            "ps",
+                            "-aq",
+                            "--filter",
+                            "label=vcode.coding.attempt=" + self.job["attempt_id"],
+                        ),
+                        "",
+                    )
+                    if os.environ.get("CODING_EVIDENCE_DIR"):
+                        target = Path(os.environ["CODING_EVIDENCE_DIR"]) / (
+                            "recovery-race-" + phase
+                        )
+                        target.mkdir(parents=True, exist_ok=True)
+                        for name in (
+                            "launch.json",
+                            "creation-state.json",
+                            "commands.json",
+                            "result.json",
+                            "artifacts.json",
+                        ):
+                            shutil.copyfile(
+                                self.artifacts / self.job["attempt_id"] / name,
+                                target / name,
+                            )
+                        (target / "controlled-observation.json").write_text(
+                            json.dumps(
+                                {
+                                    "phase": phase,
+                                    "recovery": report,
+                                    "late_cli": acknowledgment,
+                                },
+                                indent=2,
+                            )
+                        )
+                finally:
+                    if child.poll() is None:
+                        child.kill()
+                    child.communicate(timeout=5)
+                    release.touch()
+                    # Scope cleanup only to this disposable attempt, including failures.
+                    names = docker(
+                        "ps",
+                        "-aq",
+                        "--filter",
+                        "label=vcode.coding.attempt=" + self.job["attempt_id"],
+                    ).splitlines()
+                    if names:
+                        docker("rm", "-f", *names)
+                    for kind, name in (
+                        ("network", prefix + "-private"),
+                        ("volume", prefix + "-workspace"),
+                    ):
+                        subprocess.run([*DOCKER, kind, "rm", name], capture_output=True)
 
 
 if __name__ == "__main__":
