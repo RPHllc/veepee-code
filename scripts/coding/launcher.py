@@ -617,6 +617,7 @@ class Launcher:
         ][private]["IPAddress"]
         config = Path(directory) / "config"
         config.mkdir(mode=0o755)
+        config.chmod(0o755)
         for name, value in [
             ("base.json", self.git.base),
             ("proxy.json", self.profile["inference"]),
