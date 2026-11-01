@@ -1,5 +1,24 @@
 # Phase 5B-A review evidence
 
+## B1 generated-configuration permissions correction
+
+The B1 executor service's preserved `UMask=0077` exposed an initialization defect:
+`mkdir(mode=0755)` produced a generated config directory with actual mode0700,
+which container UID10001 could not traverse. The launcher now explicitly chmods
+only that directory0755 immediately after creation. Its temporary parent remains
+0700, the protected profile remains0600, and receipt/artifact directories remain
+0700. Images, tools, mounts, non-root execution and identity checks are unchanged.
+
+The additional real Linux test launches with umask0077, observes the actual host
+directory modes, and reads/parses all three generated config files inside the
+running Agent container as UID10001. It also verifies that the host profile,
+executor profile and Docker socket are inaccessible from that container. After
+confirmed cancellation it runs a separate repair attempt with the same restrictive
+umask, independently applies the patch and checks actual test exits. This brings
+the Linux suite to20 cases. Exact-head results, rebuilt amd64 image identities and
+archive checksum are recorded in the fix PR; this development evidence is not
+production acceptance. B1's original failed production attempt remains preserved.
+
 This is an isolated development implementation, not production acceptance. Research-worker configuration, deployed images, API contracts, Conductor and shared inference settings are unchanged. No coding deployment, merge, scheduler integration or production credentials are included.
 
 ## Reproducible checks

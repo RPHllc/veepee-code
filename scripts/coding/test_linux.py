@@ -156,8 +156,10 @@ class CodingLinux(unittest.TestCase):
             str(self.request),
         ]
 
-    def run_job(self):
-        p = subprocess.run(self.command, capture_output=True, text=True, timeout=140)
+    def run_job(self, **process_options):
+        p = subprocess.run(
+            self.command, capture_output=True, text=True, timeout=140, **process_options
+        )
         try:
             report = json.loads(p.stdout)
         except Exception:
@@ -627,6 +629,65 @@ class Test(unittest.TestCase):
                 for c in r["commands"]
             )
         )
+
+    def test_20_restrictive_umask_config_readable_only_inside_mount(self):
+        self.setup_job("CASE:hang")
+        private = self.root / "launcher-private"
+        private.mkdir(mode=0o700)
+        environment = {**os.environ, "TMPDIR": str(private)}
+        child = subprocess.Popen(
+            self.command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=environment,
+            umask=0o077,
+        )
+        try:
+            agent = self.wait_container("-agent")
+            generated = list(private.glob("vcode-coding-*/config"))
+            self.assertEqual(len(generated), 1)
+            self.assertEqual(generated[0].stat().st_mode & 0o777, 0o755)
+            self.assertEqual(generated[0].parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(self.profile.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self.artifacts.stat().st_mode & 0o777, 0o700)
+            observed = json.loads(
+                docker(
+                    "exec", "--user", "10001:10001", agent, "node", "-e",
+                    "const fs=require('node:fs');const assert=require('node:assert/strict');"
+                    "assert.equal(process.getuid(),10001);"
+                    "const names=['base.json','proxy.json','job.json'];"
+                    "for(const name of names)JSON.parse(fs.readFileSync('/config/'+name,'utf8'));"
+                    "assert.equal(fs.statSync('/config').mode&511,493);"
+                    "for(const path of [process.argv[1],'/config/../profile.json',"
+                    "'/etc/conductor-code/worker-profile.json','/var/run/docker.sock'])"
+                    "assert.throws(()=>fs.readFileSync(path));"
+                    "console.log(JSON.stringify({uid:process.getuid(),directory_mode:'0755',"
+                    "readable:names,host_profile_inaccessible:true}));",
+                    str(self.profile),
+                )
+            )
+            self.assertEqual(observed["uid"], 10001)
+            self.assertTrue(observed["host_profile_inaccessible"])
+            if os.environ.get("CODING_EVIDENCE_DIR"):
+                target = Path(os.environ["CODING_EVIDENCE_DIR"])
+                target.mkdir(parents=True, exist_ok=True)
+                (target / "restrictive-umask-observed.json").write_text(
+                    json.dumps({"launcher_umask": "0077", **observed}, indent=2)
+                )
+        finally:
+            if child.poll() is None:
+                child.send_signal(signal.SIGTERM)
+            stdout, stderr = child.communicate(timeout=30)
+        stopped = json.loads(stdout)
+        self.assertEqual(stopped["state"], "cancelled", stderr)
+        self.assertTrue(stopped["execution_stopped"])
+        self.job["attempt_id"] = str(uuid.uuid4())
+        self.job["instructions"] = "CASE:repair Fix add and test it."
+        self.request.write_text(json.dumps(self.job))
+        result = self.run_job(umask=0o077, env=environment)
+        self.assertEqual(result["state"], "completed", result)
+        self.assert_patch(result)
 
     def test_19_delayed_docker_create_and_start_across_recovery(self):
         """Real Docker, gated host CLI; never production fault injection."""
