@@ -192,6 +192,13 @@ class CodingLinux(unittest.TestCase):
                 if source.exists():
                     shutil.copyfile(source, target / name)
             git(self.repo, "bundle", "create", str(target / "base.bundle"), "HEAD")
+            manifest = target / "artifacts.json"
+            if manifest.exists():
+                for name, expected in json.loads(manifest.read_text()).items():
+                    self.assertEqual(
+                        hashlib.sha256((target / name).read_bytes()).hexdigest(),
+                        expected,
+                    )
         return report
 
     def assert_patch(self, report):
