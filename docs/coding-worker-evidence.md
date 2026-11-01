@@ -29,7 +29,7 @@ Live-tested ARM64 immutable image IDs:
 - Agent: `sha256:fda74dd8362eedf8358ba560e61f271edab4ecd3aef159e5ef3604c66e3fd032`.
 - Executor: `sha256:b8a319bc6235cf4dbb4c91772dc5efe0d2e25bb72a5c6604430f00de6f7ca8d0`.
 
-Owner-only evidence is retained under `~/.local/share/conductor/diagnostics/phase5b-a/live-dgx-1/` (`summary.json`, both reports, per-task patch/commands/integrity manifest and synthetic base bundle). The final local 18-case suite passed in 91.592 seconds; its retained evidence is under `phase5b-a/linux-final/`. Final PR-head amd64 image identities and CI links are recorded in the PR and its downloaded source manifest, distinguishing them from these live-tested ARM64 images. A documentation-only follow-up does not change runtime sources.
+Owner-only evidence is retained under `~/.local/share/conductor/diagnostics/phase5b-a/live-dgx-1/` (`summary.json`, both reports, per-task patch/commands/integrity manifest and synthetic base bundle). The final local 18-case suite passed in 91.592 seconds; its retained evidence is under `phase5b-a/linux-final/`. Final PR-head amd64 image identities and CI links are recorded in the PR and its downloaded source manifest, distinguishing them from these live-tested ARM64 images. Later review hardening also verifies that replay of an existing live attempt reports unknown stop state rather than claiming the original job stopped; it does not change the live-tested Agent/executor implementation. Final CI exercises this launcher behavior.
 
 ## Review and activation boundary
 

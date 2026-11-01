@@ -159,7 +159,9 @@ python3 scripts/coding/launcher.py run --profile /protected/profile.json --reque
 python3 scripts/coding/launcher.py recover --profile /protected/profile.json --attempt '<canonical-attempt-uuid>'
 ```
 
-Attempt directories are exclusive replay fences. A different attempt is not an
+Attempt directories are exclusive replay fences. A duplicate submission reports
+`attempt_already_exists` with unknown stop state, because the original may still
+be running; only explicit recovery may reconcile it. A different attempt is not an
 automatic authorized retry; Conductor must own cross-attempt idempotency. SIGTERM
 requests cancellation, followed by verified destruction of local executors before
 cancelled state. A killed launcher produces no success result; `recover` removes

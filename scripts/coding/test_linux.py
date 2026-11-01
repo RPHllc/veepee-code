@@ -351,13 +351,24 @@ class Test(unittest.TestCase):
             time.sleep(0.1)
         else:
             self.fail("Agent did not start")
+        duplicate = subprocess.run(
+            self.command, capture_output=True, text=True, timeout=10
+        )
+        duplicate_report = json.loads(duplicate.stdout)
+        self.assertEqual(
+            duplicate_report["termination_reason"], "attempt_already_exists"
+        )
+        self.assertIsNone(duplicate_report["execution_stopped"])
+        self.assertTrue(duplicate_report["dispatch_may_have_started"])
+        self.assertIn(prefix + "-agent", docker("ps", "--format", "{{.Names}}"))
         p.send_signal(signal.SIGTERM)
         out, err = p.communicate(timeout=25)
         r = json.loads(out)
         self.assertEqual(r["state"], "cancelled", (r, err))
         self.assertTrue(r["execution_stopped"])
         replay = self.run_job()
-        self.assertEqual(replay["execution_started"], False)
+        self.assertIsNone(replay["execution_stopped"])
+        self.assertEqual(replay["termination_reason"], "attempt_already_exists")
 
     def test_10_container_interruption_and_launcher_recovery(self):
         self.setup_job("CASE:hang")

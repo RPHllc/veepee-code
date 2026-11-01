@@ -1053,7 +1053,13 @@ def main():
     if args.action == "recover":
         return recover(profile, args.attempt)
     job = request(read_json(args.request, 16384), profile)
-    launcher = Launcher(profile, job)
+    try:
+        launcher = Launcher(profile, job)
+    except FileExistsError:
+        # An existing attempt may still be running. Reject replay without claiming
+        # that the original execution is absent or stopped. Only recover can reconcile.
+        DISPATCH_MAY_HAVE_STARTED = True
+        raise Rejected("attempt_already_exists")
     DISPATCH_MAY_HAVE_STARTED = True
     return launcher.execute()
 
