@@ -35,3 +35,8 @@ benchmarks/corpus/
 
 # Built web UI (produced by `cd web && npm run build`, lands in dist/)
 web/node_modules/
+
+# Coding-worker development/test artifacts
+__pycache__/
+*.pyc
+coding-evidence/
