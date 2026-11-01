@@ -1,3 +1,5 @@
+import { ResearchJobs } from './research-jobs.js';
+import { z } from 'zod';
 import { readBody, BodyIntakeTimeoutError, WORKER_BODY_TIMEOUT_MS } from './api-body.js';
 import type { WorkerReadiness } from './worker-readiness.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
@@ -44,6 +46,7 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
   const { agent, modelManager, registry } = config;
 
   const apiToken = config.apiToken || null;
+  const researchJobs = registry.policy ? new ResearchJobs(agent, registry) : null;
   if (registry.policy) {
     if (!apiToken || apiToken.length < 32) throw new Error('Worker requires a 32+ character API token');
     if (config.apiExecute || config.rcEnabled || config.rcRequestHandler || config.teacher?.enabled) {
@@ -98,7 +101,26 @@ export function startApiServer(config: ApiConfig): { port: number; connectionCou
         if (handled) return;
       }
 
-      if (path === '/ready' && req.method === 'GET' && registry.policy && config.workerReadiness) {
+      if (researchJobs && path === '/v1/research/status' && req.method === 'GET') {
+        sendJson(res, 200, researchJobs.status()); return;
+      }
+      if (researchJobs && path === '/v1/research/jobs' && req.method === 'POST') {
+        const result = researchJobs.submit(JSON.parse(await readBody(req, WORKER_BODY_TIMEOUT_MS)));
+        sendJson(res, result.code, result.body); return;
+      }
+      const researchMatch = /^\/v1\/research\/jobs\/([a-f0-9-]{36})(\/cancel)?$/.exec(path);
+      if (researchJobs && researchMatch) {
+        if (req.method === 'GET' && !researchMatch[2]) {
+          const job = researchJobs.get(researchMatch[1]); sendJson(res, job ? 200 : 404, job ?? { error: 'Receipt not found' }); return;
+        }
+        if (req.method === 'POST' && researchMatch[2]) {
+          const parsed = z.object({ worker_instance: z.string().uuid(), reason: z.enum(['cancelled', 'timed_out']) }).strict().safeParse(JSON.parse(await readBody(req, WORKER_BODY_TIMEOUT_MS)));
+          if (!parsed.success) { sendJson(res, 422, { error: 'Invalid cancellation' }); return; }
+          const result = researchJobs.cancel(researchMatch[1], parsed.data.worker_instance, parsed.data.reason);
+          sendJson(res, result.code, result.body); return;
+        }
+      }
+      if (path === '/ready'  && req.method === 'GET' && registry.policy && config.workerReadiness) {
         const readiness = await config.workerReadiness();
         sendJson(res, readiness.ready ? 200 : 503, readiness);
         return;

@@ -112,7 +112,7 @@ describe('actual upstream Agent and HTTP API with mock inference', () => {
   it('requires auth on all routes and disallows execute and RC even with valid auth', async () => {
     const h = await apiHarness();
     try {
-      for (const path of ['/health', '/v1/models', '/api/tools', '/api/status', '/rc/stream']) {
+      for (const path of ['/health', '/v1/models', '/api/tools', '/api/status', '/rc/stream', '/v1/research/status', '/v1/research/jobs/00000000-0000-4000-8000-000000000000']) {
         expect((await fetch(h.url + path)).status).toBe(401);
         expect((await fetch(h.url + path, { headers: { authorization: 'Bearer incorrect' } })).status).toBe(401);
       }
@@ -247,5 +247,54 @@ describe('worker turn-limit diagnostic', () => {
       expect(result.errors.join(' ')).not.toContain('120 turns');
       expect(h.requests).toHaveLength(8);
     } finally { h.close(); }
+  });
+});
+
+
+describe('research receipt HTTP protocol with actual Agent and mock inference', () => {
+  it('authenticates submission and returns matching bounded tool receipts and telemetry', async () => {
+    const h = await apiHarness();
+    const headers = { authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    try {
+      const status = await (await fetch(h.url + '/v1/research/status', { headers })).json() as any;
+      const { randomUUID } = await import('node:crypto');
+      const request = { contract_version: 1, capability: 'research.web', task_id: randomUUID(), attempt_id: randomUUID(), correlation_id: randomUUID(), idempotency_key: randomUUID(), expected_worker_instance: status.worker_instance, query: 'docs', max_results: 3, deadline_seconds: 5 };
+      expect((await fetch(h.url + '/v1/research/jobs', { method: 'POST', body: JSON.stringify(request) })).status).toBe(401);
+      const submit = await fetch(h.url + '/v1/research/jobs', { method: 'POST', headers, body: JSON.stringify(request) });
+      expect(submit.status).toBe(202);
+      let record: any;
+      for (let i = 0; i < 50; i++) {
+        record = await (await fetch(h.url + '/v1/research/jobs/' + request.attempt_id, { headers })).json();
+        if (record.released) break; await new Promise(r => setTimeout(r, 10));
+      }
+      expect(record.request).toEqual(request); expect(record.released).toBe(true); expect(record.status).toBe('completed');
+      expect(record.tools[0].name).toBe('web_search'); expect(record.diagnostics.model_turns).toBe(2);
+      expect(record.events.some((e: any) => e.kind === 'model_first_event')).toBe(true);
+      expect(JSON.stringify(record)).not.toContain('reasoning_content');
+      expect((await fetch(h.url + '/v1/research/jobs/' + request.attempt_id + '/cancel', { method: 'POST', headers, body: '{}' })).status).toBe(422);
+    } finally { h.close(); }
+  });
+});
+
+describe('research HTTP conflict codes', () => {
+  it('distinguishes busy, stale instance and retained identity conflicts over HTTP', async () => {
+    const h = await apiHarness('__hang__');
+    const { randomUUID } = await import('node:crypto');
+    const headers = { authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const post = (body: unknown) => fetch(h.url + '/v1/research/jobs', { method: 'POST', headers, body: JSON.stringify(body) });
+    try {
+      const status = await (await fetch(h.url + '/v1/research/status', { headers })).json() as any;
+      const request = { contract_version: 1, capability: 'research.web', task_id: randomUUID(), attempt_id: randomUUID(), correlation_id: randomUUID(), idempotency_key: randomUUID(), expected_worker_instance: status.worker_instance, query: 'docs', max_results: 3, deadline_seconds: 5 };
+      expect((await post(request)).status).toBe(202);
+      for (const [body, error_code] of [
+        [{ ...request, attempt_id: randomUUID(), idempotency_key: randomUUID() }, 'worker_busy'],
+        [{ ...request, expected_worker_instance: randomUUID() }, 'worker_instance_mismatch'],
+        [{ ...request, query: 'different' }, 'identity_conflict'],
+      ] as const) {
+        const response = await post(body);
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ contract_version: 1, error_code });
+      }
+    } finally { h.a.abort(); h.close(); }
   });
 });

@@ -5,6 +5,7 @@ export interface ToolResult {
   success: boolean;
   output: string;
   error?: string;
+  sources?: string[];
 }
 
 /** Where a tool came from. Drives `/tools` grouping, lint coverage, and

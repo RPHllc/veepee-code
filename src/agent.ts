@@ -36,6 +36,7 @@ export interface AgentEvent {
   args?: Record<string, unknown>;
   success?: boolean;
   error?: string;
+  sources?: string[];
   from?: string;
   to?: string;
   // Token metrics from Ollama (available on 'done' events)
@@ -376,6 +377,10 @@ export class AgentBusyError extends Error {
 }
 
 export class Agent {
+  /** Trusted harness telemetry; never exposes reasoning text or grants permissions. */
+  private telemetry?: (event: Record<string, number | string>) => void;
+  setTelemetry(sink?: (event: Record<string, number | string>) => void): void { this.telemetry = sink; }
+  private trace(event: Record<string, number | string>): void { try { this.telemetry?.(event); } catch { /* diagnostics cannot authorize or interrupt work */ } }
   private ollama: Ollama;
   private context: ContextManager;
   private modelManager: ModelManager;
@@ -993,6 +998,8 @@ export class Agent {
     try {
       yield* inner;
     } finally {
+      // Policy workers cannot advertise idle while abandoned tool work still runs.
+      if (this.registry?.policy) await this.registry.settle();
       this.runLock = false;
       // The turn is over — however it ended. This sits in the SAME finally as the
       // run lock on purpose: a run that threw, was aborted, or was abandoned
@@ -1368,6 +1375,9 @@ export class Agent {
        *  entire conversation, and nothing in the harness could see that. */
       let promptCachedCount = 0;
       let evalDuration = 0;
+      const generationStarted = Date.now();
+      let firstEventAt: number | null = null;
+      this.trace({ kind: 'model_turn_started', turn: turn + 1 });
 
       try {
         // Use optimal context size from benchmarks if available
@@ -1500,6 +1510,7 @@ export class Agent {
             return;
           }
 
+          if (firstEventAt === null) { firstEventAt = Date.now(); this.trace({ kind: 'model_first_event', turn: turn + 1, first_event_ms: firstEventAt - generationStarted }); }
           // Gateway-split reasoning arrives in the Ollama `thinking` field: the DGX
           // runs reasoning-parser OFF, so llm-gateway splits `[trace]</think>[answer]`
           // and emits the trace here. Render it collapsed instead of leaking inline.
@@ -1608,11 +1619,13 @@ export class Agent {
         }
         // This model completed a reply: it did (some of) the work.
         this.modelsUsed.add(currentModel);
+        this.trace({ kind: 'model_turn_finished', turn: turn + 1, duration_ms: Date.now() - generationStarted, output_tokens: evalCount, prompt_tokens: promptEvalCount });
       } catch (err) {
         if (stallTimer) clearTimeout(stallTimer);
         // Whatever the gate was holding is part of the answer; do not lose it.
         const heldOnError = gate.end();
         if (heldOnError) yield { type: 'text', content: heldOnError };
+        this.trace({ kind: 'model_turn_interrupted', turn: turn + 1, duration_ms: Date.now() - generationStarted });
         const wasAborted = this.abortController?.signal.aborted;
         this.abortController = null;
         if (wasAborted) {
@@ -1869,7 +1882,7 @@ export class Agent {
         }
         // Permission checks must be serialized to avoid concurrent prompt races.
         const executableCalls: Array<{ idx: number; name: string; args: Record<string, unknown> }> = [];
-        const earlyResults: Array<{ idx: number; name: string; args: Record<string, unknown>; result: { success: boolean; output: string; error?: string } }> = [];
+        const earlyResults: Array<{ idx: number; name: string; args: Record<string, unknown>; result: ToolResult }> = [];
         for (let i = 0; i < toolCalls.length; i++) {
           const call = toolCalls[i];
           const name = call.function.name;
@@ -1915,6 +1928,7 @@ export class Agent {
             success: result.success,
             content: result.success ? result.output : result.error,
             error: result.error,
+            sources: result.sources,
           };
           const resultContent = result.success ? result.output : `Error: ${result.error}`;
           stepResults[idx] = resultContent;
@@ -1997,6 +2011,7 @@ export class Agent {
             success: result.success,
             content: result.success ? result.output : result.error,
             error: result.error,
+            sources: result.sources,
           };
 
           // Only SUCCESSFUL writes count as "the model handled this file". An
