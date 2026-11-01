@@ -1,0 +1,47 @@
+name: Isolated coding worker
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  coding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CODING_DOCKER_CONTEXT: default
+      CODING_EVIDENCE_DIR: ${{ github.workspace }}/coding-evidence
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate trusted local contract
+        run: python3 scripts/coding/test_contract.py
+      - name: Build distinct Linux amd64 executor and agent
+        run: |
+          docker build --target executor --build-arg VCS_REF=${SOURCE_SHA} -f Dockerfile.coding -t vcode-coding-executor:dev .
+          docker build --target agent --build-arg VCS_REF=${SOURCE_SHA} -f Dockerfile.coding -t vcode-coding-agent:dev .
+          docker image inspect vcode-coding-executor:dev vcode-coding-agent:dev > coding-images.json
+      - name: Real Linux isolation and coding tasks with synthetic inference
+        run: python3 scripts/coding/test_linux.py
+      - name: Preserve immutable development images and source identity
+        run: |
+          docker save vcode-coding-executor:dev vcode-coding-agent:dev | gzip > coding-worker-linux-amd64.tar.gz
+          sha256sum coding-worker-linux-amd64.tar.gz > coding-worker-linux-amd64.sha256
+          python3 -c 'import json,os; d=json.load(open("coding-images.json")); json.dump({"source_sha":os.environ["SOURCE_SHA"],"platform":"linux/amd64","images":[{"id":v["Id"],"architecture":v["Architecture"],"labels":v["Config"]["Labels"]} for v in d]},open("coding-source.json","w"),indent=2)'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coding-evidence-${{ env.SOURCE_SHA }}
+          path: coding-evidence/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coding-worker-amd64-${{ env.SOURCE_SHA }}
+          path: |
+            coding-worker-linux-amd64.tar.gz
+            coding-worker-linux-amd64.sha256
+            coding-source.json
+          retention-days: 14

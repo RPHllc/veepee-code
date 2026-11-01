@@ -13,6 +13,8 @@ export interface ToolResult {
 export type ToolSource = 'local' | 'remote' | 'mcp' | 'skill';
 
 export interface ToolDef {
+  /** Trusted adapter: a successful result represents actual workspace verification. */
+  verifiesWorkspace?: boolean;
   name: string;
   description: string;
   schema: z.ZodObject<z.ZodRawShape>;
