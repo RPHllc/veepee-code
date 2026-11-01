@@ -183,6 +183,7 @@ class CodingLinux(unittest.TestCase):
             (target / "observed.json").write_text(json.dumps(report, indent=2))
             for name in (
                 "result.json",
+                "launch.json",
                 "patch.diff",
                 "commands.json",
                 "artifacts.json",

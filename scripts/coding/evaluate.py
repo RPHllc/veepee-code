@@ -52,6 +52,7 @@ def main():
         fixture = CodingLinux("test_01_repair_and_actual_exit_codes")
         fixture.setUp()
         try:
+            os.environ["CODING_EVIDENCE_DIR"] = str(root / "evidence" / label)
             fixture.setup_job(
                 instructions, files, {"wall_seconds": 120, "command_seconds": 15}
             )
