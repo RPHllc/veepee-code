@@ -68,7 +68,7 @@ describe('immutable worker policy boundary', () => {
   });
 });
 
-async function apiHarness(toolName = 'web_search') {
+async function apiHarness(toolName = 'web_search', workerThinking = true) {
   let requests: any[] = [];
   let hang = toolName === "__hang__";
   const backend = createServer(async (req, res) => {
@@ -83,7 +83,7 @@ async function apiHarness(toolName = 'web_search') {
   });
   backend.listen(0, '127.0.0.1'); await once(backend, 'listening');
   const address = backend.address() as any;
-  const config = { ...loadConfig(''), proxyUrl: '', llmBackend: 'openai' as const, openaiBaseUrl: `http://127.0.0.1:${address.port}/v1`, model: 'test-model', lockModel: 'test-model', autoSwitch: false };
+  const config = { ...loadConfig(''), proxyUrl: '', llmBackend: 'openai' as const, openaiBaseUrl: `http://127.0.0.1:${address.port}/v1`, model: 'test-model', lockModel: 'test-model', autoSwitch: false, workerThinking };
   const r = registry(); const m = new ModelManager(config); await m.discover(); m.switchTo('test-model');
   const a = new Agent(config, r, m, new PermissionManager());
   const api = startApiServer({ port: 0, agent: a, modelManager: m, registry: r, apiToken: token });
@@ -296,5 +296,22 @@ describe('research HTTP conflict codes', () => {
         expect(await response.json()).toMatchObject({ contract_version: 1, error_code });
       }
     } finally { h.a.abort(); h.close(); }
+  });
+});
+
+
+describe('operator-owned worker generation profile', () => {
+  it('disables thinking for bounded research while retaining the same tools and deadline', async () => {
+    const h = await apiHarness('web_search', false);
+    try {
+      const result = await h.a.runSync('test', { permissionMode: 'auto_allow' });
+      expect(result.toolCalls[0].success).toBe(true);
+      expect(h.requests.length).toBeGreaterThan(0);
+      for (const request of h.requests) {
+        expect(request.chat_template_kwargs.enable_thinking).toBe(false);
+        expect(request.tools.map((t: any) => t.function.name)).toEqual(['web_search']);
+      }
+      expect(h.r.policy!.deadlineMs).toBe(5000);
+    } finally { h.close(); }
   });
 });

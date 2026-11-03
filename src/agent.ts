@@ -1399,7 +1399,7 @@ export class Agent {
         // act sent think:false but the proxy silently dropped it, so the
         // model thought anyway. Once the proxy began translating it, act
         // mode genuinely went to instruct mode and tool-use quality cratered.
-        const useThinking = this.mode !== 'chat';
+        const useThinking = this.mode !== 'chat' && !(this.registry.policy && this.config.workerThinking === false);
         // Plan mode gets the SAME tools as act. The only difference between the
         // two is which model answers.
         //
