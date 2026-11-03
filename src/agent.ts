@@ -1426,6 +1426,10 @@ export class Agent {
         if (allowedTools) {
           tools = tools.filter(t => allowedTools.has(t.function?.name || ''));
         }
+        if (this.registry.policy && this.registry.remainingPolicyCalls === 0) {
+          tools = [];
+          messages.push({ role: 'user', content: 'The trusted worker tool budget is exhausted. No further tools are available. Produce the final concise answer from observed tool results now, citing only their source URLs. Explicitly state missing evidence and uncertainty; do not fabricate completion or facts.' });
+        }
         offeredTools = new Set(tools.map(t => t.function?.name || ''));
         gate = new TextToolCallGate(offeredTools.size > 0);
         // ~3 characters per token for JSON schemas (dense punctuation and names).

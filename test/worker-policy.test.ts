@@ -77,8 +77,8 @@ async function apiHarness(toolName = 'web_search', workerThinking = true) {
     const data = JSON.parse(body); requests.push(data);
     if (hang) return;
     res.setHeader('Content-Type', 'text/event-stream');
-    const hasResult = toolName === '__turn_limit__' ? false : data.messages.some((m: any) => m.role === 'tool');
-    const delta = hasResult ? { content: 'Research complete' } : { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: toolName, arguments: toolName === '__turn_limit__' ? JSON.stringify({ turn: requests.length }) : '{"probe":"value"}' } }] };
+    const hasResult = toolName === '__finalize__' ? !data.tools?.length : toolName === '__turn_limit__' ? false : data.messages.some((m: any) => m.role === 'tool');
+    const delta = hasResult ? { content: 'Research complete' } : { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: toolName === '__finalize__' ? 'web_search' : toolName, arguments: ['__turn_limit__', '__finalize__'].includes(toolName) ? JSON.stringify({ turn: requests.length }) : '{"probe":"value"}' } }] };
     res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: hasResult ? 'stop' : 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
   });
   backend.listen(0, '127.0.0.1'); await once(backend, 'listening');
@@ -312,6 +312,25 @@ describe('operator-owned worker generation profile', () => {
         expect(request.tools.map((t: any) => t.function.name)).toEqual(['web_search']);
       }
       expect(h.r.policy!.deadlineMs).toBe(5000);
+    } finally { h.close(); }
+  });
+});
+
+
+describe('bounded final synthesis after tool exhaustion', () => {
+  it('removes tools and finalizes existing evidence without extending the hard budget', async () => {
+    const h = await apiHarness('__finalize__', false);
+    try {
+      const result = await h.a.runSync('test', { permissionMode: 'auto_allow' });
+      expect(result.errors).toEqual([]);
+      expect(result.toolCalls).toHaveLength(6);
+      expect(h.requests).toHaveLength(7);
+      expect(h.requests[6].tools).toBeUndefined();
+      expect(h.requests[6].messages.at(-1).content).toContain('trusted worker tool budget is exhausted');
+      expect(h.r.remainingPolicyCalls).toBe(0);
+      expect(h.r.diagnostics.tool_attempts).toBe(6);
+      expect(h.r.diagnostics.actual_tool_calls).toBe(1);
+      expect(h.r.diagnostics.cache_hits).toBe(5);
     } finally { h.close(); }
   });
 });
