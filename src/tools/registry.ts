@@ -123,6 +123,9 @@ export class ToolRegistry {
   constructor(readonly policy?: WorkerPolicy) {}
 
   private policyCalls = 0;
+  get remainingPolicyCalls(): number | null {
+    return this.policy ? Math.max(0, this.policy.maxToolCalls - this.policyCalls) : null;
+  }
   private searchCache = new Map<string, Promise<ToolResult>>();
   private inFlight = new Set<Promise<ToolResult>>();
   readonly diagnostics = { tool_attempts: 0, actual_tool_calls: 0, cache_hits: 0, search_duration_ms: 0 };
