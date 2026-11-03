@@ -15,6 +15,8 @@ export interface Config {
   /** Base URL for the openai backend (e.g. "http://10.0.154.246:8000" or
    *  ".../v1"). Only used when llmBackend === "openai". */
   openaiBaseUrl: string | null;
+  /** Explicit isolated-worker protocol profile; no automatic reasoning promotion. */
+  openaiAnswerField?: 'content' | 'reasoning';
   /** Bearer token for the openai backend, if it requires one (vLLM usually
    *  does not). Only used when llmBackend === "openai". */
   openaiApiKey: string | null;
@@ -201,6 +203,7 @@ const DEFAULTS: Config = {
   proxyUrl: 'http://localhost:11434',
   llmBackend: 'ollama',
   openaiBaseUrl: null,
+  openaiAnswerField: 'content',
   openaiApiKey: null,
   dashboardUrl: '',
   model: null,

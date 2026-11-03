@@ -155,7 +155,7 @@ export class OpenAIChatClient {
   private baseUrl: string;
   private apiKey?: string;
 
-  constructor(baseUrl: string, apiKey?: string) {
+  constructor(baseUrl: string, apiKey?: string, private answerField: 'content' | 'reasoning' = 'content') {
     // Normalize: accept ".../v1" or bare host; ensure single "/v1" suffix.
     let b = baseUrl.replace(/\/+$/, '');
     if (!/\/v1$/.test(b)) b = b + '/v1';
@@ -166,6 +166,9 @@ export class OpenAIChatClient {
   async chat(params: ChatParams & { stream: true }): Promise<AsyncIterable<OllamaChunk>>;
   async chat(params: ChatParams): Promise<OllamaResponse>;
   async chat(params: ChatParams): Promise<AsyncIterable<OllamaChunk> | OllamaResponse> {
+    if (this.answerField === 'reasoning' && params.think !== false) {
+      throw new Error('Explicit reasoning answer profile requires thinking disabled');
+    }
     const o = params.options || {};
     const body: Record<string, unknown> = {
       model: params.model,
@@ -213,16 +216,19 @@ export class OpenAIChatClient {
       throw new Error(`OpenAI /v1 backend HTTP ${res.status}: ${text.slice(0, 300)}`);
     }
 
-    const stream = this.parse(res.body, controller, startedAt);
+    const stream = this.parse(res.body, controller, startedAt, params.model);
     return params.stream === true ? stream : collectResponse(stream);
   }
 
-  private async *parse(body: ReadableStream<Uint8Array>, controller: AbortController, startedAt: number): AsyncGenerator<OllamaChunk> {
+  private async *parse(body: ReadableStream<Uint8Array>, controller: AbortController, startedAt: number, expectedModel: string): AsyncGenerator<OllamaChunk> {
     const decoder = new TextDecoder();
     // Accumulate tool calls by index across delta frames.
     const toolAcc = new Map<number, { name: string; args: string }>();
     let buf = '';
     let sawToolCalls = false;
+    let profiledAnswer = '';
+    let profiledFirstEvent = false;
+    let profiledFinish: string | undefined;
     let lastUsage: {
       prompt_tokens?: number;
       completion_tokens?: number;
@@ -242,7 +248,14 @@ export class OpenAIChatClient {
           if (line.startsWith('data:')) line = line.slice(5).trim();
           if (line === '[DONE]') continue;
           let j: any;
-          try { j = JSON.parse(line); } catch { continue; }
+          try { j = JSON.parse(line); } catch { if (this.answerField === 'reasoning') throw new Error('Malformed profiled response'); continue; }
+
+          if (this.answerField === 'reasoning') {
+            if (j.model !== expectedModel || !Array.isArray(j.choices) || j.choices.length > 1) throw new Error('Profiled response identity mismatch');
+            if (!profiledFirstEvent) { profiledFirstEvent = true; yield { message: {} }; }
+            const c = j.choices[0];
+            if (c && (c.index !== 0 || (c.delta?.role && c.delta.role !== 'assistant') || c.delta?.refusal || c.delta?.function_call)) throw new Error('Invalid profiled response envelope');
+          }
 
           // usage frame (from stream_options.include_usage). Capture the
           // LAST-seen usage and emit once after the loop — some servers send a
@@ -253,8 +266,10 @@ export class OpenAIChatClient {
           const choice = j.choices?.[0];
           if (!choice) continue;
           const delta = choice.delta || {};
+          if (this.answerField === 'reasoning' && choice.finish_reason) profiledFinish = choice.finish_reason;
 
           if (typeof delta.content === 'string' && delta.content.length > 0) {
+            if (this.answerField === 'reasoning') throw new Error('Conflicting answer channels');
             yield { message: { content: delta.content } };
           }
           // Some servers surface reasoning on its own channel. It is yielded as
@@ -293,7 +308,13 @@ export class OpenAIChatClient {
                 ? delta.reasoning
                 : '';
           if (reasoningDelta) {
-            yield { message: { thinking: reasoningDelta } };
+            if (this.answerField === 'reasoning') {
+              if (delta.reasoning_content) throw new Error('Unexpected profiled answer spelling');
+              profiledAnswer += reasoningDelta;
+              if (Buffer.byteLength(profiledAnswer) > 16384) throw new Error('Profiled answer exceeds bound');
+            } else {
+              yield { message: { thinking: reasoningDelta } };
+            }
           }
 
           if (Array.isArray(delta.tool_calls)) {
@@ -307,6 +328,15 @@ export class OpenAIChatClient {
             }
           }
         }
+      }
+
+      if (this.answerField === 'reasoning') {
+        if (!['stop', 'tool_calls'].includes(profiledFinish || '')) throw new Error('Incomplete profiled answer');
+        // The operator verified this backend puts non-thinking final answers in
+        // reasoning. Buffer until stream completion, so conflicting channels or
+        // truncated output cannot become successful public research evidence.
+        if ((profiledFinish === 'tool_calls') !== sawToolCalls) throw new Error('Profiled tool completion mismatch');
+        if (profiledAnswer && !sawToolCalls) yield { message: { content: profiledAnswer } };
       }
 
       // Emit accumulated tool calls as a single Ollama-shaped chunk with

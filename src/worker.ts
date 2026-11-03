@@ -14,6 +14,7 @@ import { startApiServer } from './api.js';
 
 const settingsSchema = z.object({
   openaiBaseUrl: z.string().url(),
+  openaiAnswerField: z.enum(['content', 'reasoning']).default('content'),
   model: z.string().min(1).max(200),
   searxngUrl: z.string().url(),
   apiHost: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
