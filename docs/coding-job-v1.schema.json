@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "code.patch request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "capability": {
+      "const": "code.patch"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "correlation_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "base_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "instructions": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "description": "Also bounded to 8000 UTF-8 bytes by trusted implementation."
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "wall_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 180
+        },
+        "command_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30
+        },
+        "memory_mb": {
+          "type": "integer",
+          "minimum": 128,
+          "maximum": 1024
+        },
+        "workspace_mb": {
+          "type": "integer",
+          "minimum": 8,
+          "maximum": 64
+        },
+        "pids": {
+          "type": "integer",
+          "minimum": 32,
+          "maximum": 128
+        },
+        "tool_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "cpus": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 2
+        }
+      },
+      "required": [
+        "wall_seconds",
+        "command_seconds",
+        "memory_mb",
+        "workspace_mb",
+        "pids",
+        "tool_calls",
+        "cpus"
+      ]
+    }
+  },
+  "required": [
+    "contract_version",
+    "capability",
+    "task_id",
+    "attempt_id",
+    "correlation_id",
+    "idempotency_key",
+    "repository",
+    "base_sha",
+    "instructions",
+    "budgets"
+  ]
+}

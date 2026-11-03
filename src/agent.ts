@@ -456,7 +456,7 @@ export class Agent {
   /** Lazily-built gateway client, used for models the direct endpoint lacks. */
   private gatewayClient: Ollama | null = null;
 
-  constructor(config: Config, registry: ToolRegistry, modelManager: ModelManager, permissions: PermissionManager) {
+  constructor(config: Config, registry: ToolRegistry, modelManager: ModelManager, permissions: PermissionManager, isolatedPrompt?: string) {
     // Backend transport: "openai" talks straight to a vLLM /v1 server
     // (bypassing the llm-gateway + Ollama format); "ollama" (default) uses the
     // gateway. The adapter is duck-compatible with the Ollama `.chat()` surface
@@ -472,7 +472,7 @@ export class Agent {
     } else {
       this.ollama = new Ollama({ host: config.proxyUrl, headers: { "x-ollama-source": "vcode" } });
     }
-    this.context = new ContextManager(undefined, !!registry.policy);
+    this.context = new ContextManager(undefined, !!registry.policy, isolatedPrompt);
     // The task list is this agent's own (API sessions each get an Agent but
     // share one registry); the registry only carries the tool's schema.
     if (!registry.policy && !registry.has(this.todoTool.name)) registry.register(buildTodoTool(new TodoList()));
@@ -1074,6 +1074,7 @@ export class Agent {
    * costs a turn every time it is wrong.
    */
   private async buildCompletenessNudgeForTurn(editedPaths: Set<string>): Promise<string | null> {
+    if (this.registry.policy) return null; // Isolated tools own all workspace reads.
     try {
       const { readdir, readFile: rf } = await import('node:fs/promises');
       const { dirname, join: joinPath, extname, relative: rel } = await import('node:path');
@@ -2030,8 +2031,8 @@ export class Agent {
           // verification.
           if (result.success && CODE_MUTATION_TOOLS.has(toolName)) {
             codeChangedUnverified = true;
-          } else if (result.success && toolName === 'bash'
-                     && bashVerifies(String((toolArgs as { command?: unknown }).command ?? ''))) {
+          } else if (result.success && (this.registry.get(toolName)?.verifiesWorkspace
+                     || (toolName === 'bash' && bashVerifies(String((toolArgs as { command?: unknown }).command ?? ''))))) {
             codeChangedUnverified = false;
           }
 
@@ -2154,6 +2155,7 @@ export class Agent {
    *  in the permission prompt so the user can approve with full context.
    */
   private _previewToolCall(toolName: string, args: Record<string, unknown>): string | undefined {
+    if (this.registry.policy) return undefined; // No out-of-adapter filesystem reads.
     try {
       const path = typeof args.path === 'string' ? resolve(args.path) : null;
       if (!path) return undefined;

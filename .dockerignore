@@ -4,3 +4,8 @@ dist
 .env
 .veepee
 web/node_modules
+
+# Coding-worker development/test artifacts
+__pycache__/
+*.pyc
+coding-evidence/

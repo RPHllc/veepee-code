@@ -1,0 +1,29 @@
+# Separate development images. Research Dockerfile, entry point and image pins are unchanged.
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --ignore-scripts
+COPY . .
+RUN npm run build
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS executor
+ARG VCS_REF=uncommitted
+LABEL org.opencontainers.image.source="https://github.com/RPHllc/veepee-code" org.opencontainers.image.revision=$VCS_REF org.opencontainers.image.licenses="MIT" org.rphllc.profile="coding-executor"
+# Controlled build-time dependencies. Runtime jobs have neither install authority nor network.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 git iptables ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY scripts/coding/snapshot.py scripts/coding/netguard.py /opt/coding/
+COPY LICENSE /opt/coding/LICENSE
+ENV HOME=/workspace PATH=/usr/local/bin:/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1
+USER 10001:10001
+WORKDIR /workspace
+ENTRYPOINT []
+FROM executor AS agent
+WORKDIR /app
+USER root
+COPY --from=build /app/package*.json ./
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY --from=build /app/dist ./dist
+LABEL org.rphllc.profile="coding-agent"
+USER 10001:10001
+WORKDIR /workspace
+ENV HOME=/workspace TERM=dumb NODE_ENV=production
+ENTRYPOINT []
