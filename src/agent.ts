@@ -462,7 +462,7 @@ export class Agent {
     // gateway. The adapter is duck-compatible with the Ollama `.chat()` surface
     // the agent loop consumes, so it's cast to the same field type.
     if (config.llmBackend === 'openai' && config.openaiBaseUrl) {
-      this.ollama = new OpenAIChatClient(config.openaiBaseUrl, config.openaiApiKey ?? undefined, registry.policy ? config.openaiAnswerField : 'content') as unknown as Ollama;
+      this.ollama = new OpenAIChatClient(config.openaiBaseUrl, config.openaiApiKey ?? undefined) as unknown as Ollama;
       this.openaiBackend = true;
       // Until the server's own list arrives (ensureDirectModels), assume it
       // serves the primary. Every other model (reviewModel, subagent models)
@@ -1399,7 +1399,7 @@ export class Agent {
         // act sent think:false but the proxy silently dropped it, so the
         // model thought anyway. Once the proxy began translating it, act
         // mode genuinely went to instruct mode and tool-use quality cratered.
-        const useThinking = this.mode !== 'chat' && !(this.registry.policy && this.config.openaiAnswerField === 'reasoning');
+        const useThinking = this.mode !== 'chat' && !(this.registry.policy && this.config.workerThinking === false);
         // Plan mode gets the SAME tools as act. The only difference between the
         // two is which model answers.
         //
