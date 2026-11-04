@@ -14,6 +14,7 @@ const schema = z.object({
 /** Immutable, operator-owned ceiling. A client may only narrow this set. */
 export class WorkerPolicy {
   private readonly names: ReadonlySet<string>;
+  readonly role: string;
   readonly maxToolCalls: number;
   readonly maxTurns: number;
   readonly deadlineMs: number;
@@ -21,6 +22,7 @@ export class WorkerPolicy {
     const parsed = schema.parse(value);
     if (parsed.role !== 'coding' && parsed.max_job_seconds > 180) throw new Error('Non-coding worker deadline exceeds 180s');
     if (new Set(parsed.allowed_tools).size !== parsed.allowed_tools.length) throw new Error('Duplicate policy tool');
+    this.role = parsed.role;
     this.names = new Set(parsed.allowed_tools);
     this.maxToolCalls = parsed.max_tool_calls_per_job;
     this.maxTurns = Math.min(this.maxToolCalls + 2, 20);

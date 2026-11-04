@@ -385,6 +385,65 @@ obj.write(sys.argv[2],json.loads(sys.argv[3]))
                     (self.root / name).unlink(missing_ok=True)
 
 
+class BoundedDiagnosticCapture(unittest.TestCase):
+    def capture(self, script, **kwargs):
+        import subprocess, sys, time
+        from unittest.mock import patch
+        from launcher import Launcher
+        obj = object.__new__(Launcher)
+        obj.collecting = False
+        obj.stop_reason = None
+        obj.deadline = time.monotonic() + 5
+        children = []
+        popen = subprocess.Popen
+
+        def start(*args, **options):
+            child = popen(*args, **options)
+            children.append(child)
+            return child
+
+        try:
+            with patch.object(subprocess, "Popen", side_effect=start):
+                return obj.capture([sys.executable, "-c", script], timeout=3, **kwargs)
+        finally:
+            for child in children:
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    if stream:
+                        stream.close()
+
+    def test_large_stderr_preserves_prefix_and_final_root_cause_in_same_byte_cap(self):
+        import hashlib
+        stdout = bytes(range(256)) * 20
+        prefix = b"initial context\n" + b"p" * (2048 - 16)
+        final = b"\nFINAL ROOT CAUSE ERROR\n"
+        suffix = b"t" * (2048 - len(final)) + final
+        self.assertEqual(len(prefix), 2048)
+        self.assertEqual(len(suffix), 2048)
+        code, output, meta = self.capture(
+            "import sys;sys.stdout.buffer.write(bytes(range(256))*20);"
+            + "sys.stderr.buffer.write(" + repr(prefix) + "+b'middle\\n'*20000+" + repr(suffix) + ");sys.exit(1)"
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(output, stdout)
+        self.assertEqual(hashlib.sha256(output).digest(), hashlib.sha256(stdout).digest())
+        self.assertEqual(meta["stderr"].encode(), prefix + suffix)
+        self.assertEqual(len(meta["stderr"].encode()), 4096)
+        self.assertTrue(meta["truncated"])
+
+    def test_short_stderr_and_stdout_truncation_semantics_are_unchanged(self):
+        code, output, meta = self.capture(
+            "import sys;sys.stdout.buffer.write(b'0123456789');sys.stderr.write('short error')",
+            limit=4, truncate=True,
+        )
+        self.assertEqual((code, output, meta), (0, b"0123", {"stderr": "short error", "truncated": True}))
+        _, output, meta = self.capture("import sys;sys.stdout.write('ok');sys.stderr.write('short error')")
+        self.assertEqual((output, meta), (b"ok", {"stderr": "short error", "truncated": False}))
+
+    def test_oversized_binary_stdout_still_rejects_without_truncation_permission(self):
+        with self.assertRaisesRegex(Rejected, "bounded_output_exceeded"):
+            self.capture("import sys;sys.stdout.buffer.write(b'x'*10000)", limit=64)
+
+
 class ExtendedRuntimeDeadlines(unittest.TestCase):
     def test_egress_guard_uses_bounded_job_lifetime(self):
         import os, runpy, subprocess, sys

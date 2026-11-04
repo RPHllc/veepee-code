@@ -27,6 +27,13 @@ their180-second policy ceiling. Existing Conductor fixture enrollment/source sta
 unchanged; a software project may explicitly enroll the longer deadline within
 its original overall goal budget.
 
+Successful tool activity counts as progress for the coding role's no-visible-prose
+guard. Failed tools and other roles retain that guard; the independent total-turn,
+tool-call, repeated-signature and wall-time ceilings remain unchanged. Captured
+stderr retains its initial2048 and latest2048 bytes when truncated, preserving
+final test diagnostics within the existing4096-byte cap. Binary stdout capture,
+hashing and truncation policy are unchanged.
+
 ```json
 {
   "contract_version": 1,
