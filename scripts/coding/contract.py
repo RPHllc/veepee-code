@@ -171,7 +171,12 @@ def load_profile(path, *, recover=False):
     for name, repo in profile["repositories"].items():
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
             raise Rejected("repository_id")
-        keys(repo, ["path", "base_sha", "commands"])
+        repo_fields = ["path", "base_sha", "commands"]
+        if isinstance(repo, dict) and "max_wall_seconds" in repo:
+            repo_fields.append("max_wall_seconds")
+        keys(repo, repo_fields)
+        if "max_wall_seconds" in repo:
+            integer(repo["max_wall_seconds"], 5, 600)
         if not Path(repo["path"]).is_absolute() or (
             not recover and not Path(repo["path"]).is_dir()
         ):
@@ -235,7 +240,9 @@ def request(value, profile):
             "tool_calls",
         ],
     )
-    integer(b["wall_seconds"], 5, 180)
+    integer(b["wall_seconds"], 5, 600)
+    if b["wall_seconds"] > repo.get("max_wall_seconds", 180):
+        raise Rejected("repository_wall_budget")
     integer(b["command_seconds"], 1, 30)
     integer(b["memory_mb"], 128, 1024)
     integer(b["workspace_mb"], 8, 64)

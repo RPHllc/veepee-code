@@ -16,7 +16,7 @@ const inputSchema = z.object({
   inference_url: z.string().url(),
   commands: z.array(z.enum(['python_unittest', 'node_test', 'python_syntax'])).min(1).max(3),
   max_tool_calls: z.number().int().min(1).max(64),
-  max_seconds: z.number().int().min(1).max(180),
+  max_seconds: z.number().int().min(1).max(600),
 }).strict();
 const pending = new Map<number, (value: { success: boolean; output: string; error?: string }) => void>();
 let sequence = 0;

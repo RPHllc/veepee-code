@@ -135,6 +135,23 @@ class Contract(unittest.TestCase):
         self.profile_file()
         with self.assertRaises(Rejected):
             load_profile(self.path)
+
+    def test_larger_wall_budget_requires_protected_repository_enrollment(self):
+        value = copy.deepcopy(self.value)
+        value["budgets"]["wall_seconds"] = 181
+        with self.assertRaises(Rejected):
+            request(value, load_profile(self.profile_file()))
+        self.profile["repositories"]["fixture"]["max_wall_seconds"] = 600
+        profile = load_profile(self.profile_file())
+        value["budgets"]["wall_seconds"] = 600
+        self.assertEqual(request(value, profile), value)
+        value["budgets"]["wall_seconds"] = 601
+        with self.assertRaises(Rejected):
+            request(value, profile)
+        for bad in (True, 0, 601, "600"):
+            self.profile["repositories"]["fixture"]["max_wall_seconds"] = bad
+            with self.assertRaises(Rejected):
+                load_profile(self.profile_file())
         self.profile["repositories"]["fixture"]["commands"] = ["python_unittest"]
         for url in (
             "http://evil.invalid:8000/v1",
