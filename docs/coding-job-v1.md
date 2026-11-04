@@ -20,6 +20,13 @@ choose it. This permits a real implementation plus bounded model reasoning to
 fit in one tool-call response. Existing wall-time, tool-call, model-call, context,
 response-byte and network ceilings remain in force.
 
+An enrolled repository may specify `max_wall_seconds` from5 through600. Omission
+retains180; job input cannot exceed that protected repository ceiling. The coding
+agent and launcher use the same bounded job deadline. Other worker roles retain
+their180-second policy ceiling. Existing Conductor fixture enrollment/source stays
+unchanged; a software project may explicitly enroll the longer deadline within
+its original overall goal budget.
+
 ```json
 {
   "contract_version": 1,

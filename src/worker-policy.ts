@@ -8,7 +8,7 @@ const schema = z.object({
   forbid_direct_tool_execute: z.literal(true),
   allowed_tools: z.array(z.string().regex(/^[a-z][a-z0-9_]*$/)).max(64),
   max_tool_calls_per_job: z.number().int().min(1).max(64),
-  max_job_seconds: z.number().int().min(1).max(180),
+  max_job_seconds: z.number().int().min(1).max(600),
 }).strict();
 
 /** Immutable, operator-owned ceiling. A client may only narrow this set. */
@@ -19,6 +19,7 @@ export class WorkerPolicy {
   readonly deadlineMs: number;
   constructor(value: unknown) {
     const parsed = schema.parse(value);
+    if (parsed.role !== 'coding' && parsed.max_job_seconds > 180) throw new Error('Non-coding worker deadline exceeds 180s');
     if (new Set(parsed.allowed_tools).size !== parsed.allowed_tools.length) throw new Error('Duplicate policy tool');
     this.names = new Set(parsed.allowed_tools);
     this.maxToolCalls = parsed.max_tool_calls_per_job;

@@ -5,7 +5,7 @@ import ipaddress, os, subprocess, sys
 address, port, subnet, seconds = sys.argv[1:]
 ipaddress.IPv4Address(address)
 ipaddress.IPv4Network(subnet)
-assert 1 <= int(port) <= 65535 and 1 <= int(seconds) <= 180
+assert 1 <= int(port) <= 65535 and 1 <= int(seconds) <= 600
 for binary in ("/usr/sbin/iptables", "/usr/sbin/ip6tables"):
     for chain in ("INPUT", "OUTPUT", "FORWARD"):
         subprocess.run([binary, "-w", "2", "-P", chain, "DROP"], check=True)
@@ -62,4 +62,4 @@ subprocess.run(
     ],
     check=True,
 )
-os.execvp("timeout", ["timeout", "--signal=KILL", seconds, "sleep", "181"])
+os.execvp("timeout", ["timeout", "--signal=KILL", seconds, "sleep", str(int(seconds) + 1)])

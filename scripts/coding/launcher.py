@@ -644,21 +644,7 @@ class Launcher:
         ]
         # Keep the size-limited tmpfs mounted between short-lived executors.
         # This holder runs only trusted sleep, with a bounded artifact grace period.
-        self.holder = self.prefix + "-workspace-lease"
-        self.checked(
-            [
-                "run",
-                "-d",
-                *self.flags(self.holder),
-                *self.mount(),
-                self.profile["executor_image"],
-                "timeout",
-                "--signal=KILL",
-                str(self.remaining() + 20),
-                "sleep",
-                "201",
-            ]
-        )
+        self.checked(self.workspace_lease_command())
         self.sequence += 1
         name = self.prefix + "-init"
         self.checked(
@@ -695,6 +681,11 @@ class Launcher:
             ]
         )
         return private
+
+    def workspace_lease_command(self):
+        self.holder = self.prefix + "-workspace-lease"
+        seconds = self.remaining() + 20
+        return ["run", "-d", *self.flags(self.holder), *self.mount(), self.profile["executor_image"], "timeout", "--signal=KILL", str(seconds), "sleep", str(seconds + 1)]
 
     def run_agent(self, network):
         name = self.prefix + "-agent"

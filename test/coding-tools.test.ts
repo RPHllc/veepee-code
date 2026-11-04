@@ -14,6 +14,13 @@ function harness(rpc = async () => ({ success: true, output: 'real process recor
   return { root, registry, close: () => rmSync(root, { recursive: true, force: true }) };
 }
 describe('isolated coding tools reuse policy execution boundary', () => {
+  it('keeps extended deadlines coding-only and bounded', () => {
+    expect(new WorkerPolicy({ ...data, max_job_seconds: 600 }).deadlineMs).toBe(600000);
+    expect(() => new WorkerPolicy({ ...data, max_job_seconds: 601 })).toThrow();
+    expect(() => new WorkerPolicy({ ...data, max_job_seconds: true })).toThrow();
+    expect(() => new WorkerPolicy({ ...data, role: 'research', max_job_seconds: 181 })).toThrow();
+    expect(new WorkerPolicy({ ...data, role: 'research', max_job_seconds: 180 }).deadlineMs).toBe(180000);
+  });
   it.each(['bash', 'git', 'github', 'docker', 'http_request', 'web_search', 'task', 'mcp_write', 'remote_execute', 'todo_write', 'update_memory'])('rejects unapproved %s', async name => {
     const h = harness(); try { expect((await h.registry.execute(name, {})).success).toBe(false); } finally { h.close(); }
   });
