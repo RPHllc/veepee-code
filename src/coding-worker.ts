@@ -57,6 +57,7 @@ async function main() {
   const seedNotice = input.seeded_workspace
     ? ' This fresh workspace starts from an immutable prior implementation. Inspect its current files and target the supplied corrections; rerun the approved tests. Prior work is not technical approval.' : '';
   const agent = new Agent(config, registry, models, new PermissionManager(), prompt + seedNotice);
+  agent.setModel(input.model); // Initialize the isolated system prompt before the first model request.
   const timing = { model_turns: 0, generation_duration_ms: 0, output_tokens: 0, first_event_ms: [] as number[] };
   agent.setTelemetry(event => {
     if (event.kind === 'model_turn_started') timing.model_turns++;
