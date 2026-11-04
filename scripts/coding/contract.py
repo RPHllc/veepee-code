@@ -176,7 +176,14 @@ def load_profile(path, *, recover=False):
             repo_fields.append("max_wall_seconds")
         if isinstance(repo, dict) and "allowed_paths" in repo:
             repo_fields.append("allowed_paths")
+        if isinstance(repo, dict) and "allow_correction_seeds" in repo:
+            repo_fields.append("allow_correction_seeds")
         keys(repo, repo_fields)
+        if "allow_correction_seeds" in repo and (
+            type(repo["allow_correction_seeds"]) is not bool
+            or (repo["allow_correction_seeds"] and "allowed_paths" not in repo)
+        ):
+            raise Rejected("seed_policy_requires_literal_paths")
         if "allowed_paths" in repo:
             paths = repo["allowed_paths"]
             if (
@@ -218,20 +225,15 @@ def load_profile(path, *, recover=False):
 
 
 def request(value, profile):
+    fields = [
+        "contract_version", "capability", "task_id", "attempt_id", "correlation_id",
+        "idempotency_key", "repository", "base_sha", "instructions", "budgets",
+    ]
+    if isinstance(value, dict) and "correction_seed" in value:
+        fields.append("correction_seed")
     keys(
         value,
-        [
-            "contract_version",
-            "capability",
-            "task_id",
-            "attempt_id",
-            "correlation_id",
-            "idempotency_key",
-            "repository",
-            "base_sha",
-            "instructions",
-            "budgets",
-        ],
+        fields,
     )
     if (
         type(value["contract_version"]) is not int
@@ -244,6 +246,18 @@ def request(value, profile):
     repo = profile["repositories"].get(value["repository"])
     if repo is None or value["base_sha"] != repo["base_sha"]:
         raise Rejected("repository_revision_not_enrolled")
+    if "correction_seed" in value:
+        if repo.get("allow_correction_seeds") is not True:
+            raise Rejected("correction_seed_not_enrolled")
+        seed = value["correction_seed"]
+        keys(seed, ["task_id", "attempt_id", "artifact_digest", "patch_sha256", "tree_sha"])
+        for key in ("task_id", "attempt_id"):
+            identifier(seed[key])
+        if seed["attempt_id"] == value["attempt_id"]:
+            raise Rejected("correction_seed_self_reference")
+        for key, size in (("artifact_digest", 64), ("patch_sha256", 64), ("tree_sha", 40)):
+            if not isinstance(seed[key], str) or not re.fullmatch(r"[a-f0-9]{" + str(size) + "}", seed[key]):
+                raise Rejected("correction_seed_hash")
     if (
         not isinstance(value["instructions"], str)
         or not value["instructions"].strip()

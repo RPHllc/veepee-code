@@ -13,15 +13,17 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { WorkerPolicy } from '../src/worker-policy.js';
 
 /** Real Agent + isolated workspace tools; only model inference is synthetic. */
-async function runTools(role: string, toolTurns: number, successful = true, repeat = false, batchSize = 1) {
+async function runTools(role: string, toolTurns: number, successful = true, repeat = false, batchSize = 1, isolatedPrompt = 'Inspect the isolated workspace using supplied tools.') {
   const root = mkdtempSync(join(tmpdir(), 'coding-progress-'));
   for (let i = 0; i < 48; i++) writeFileSync(join(root, `file${i}.txt`), `Observed file ${i}`);
   let requests = 0;
+  const systemPrompts: string[] = [];
   const backend = createServer(async (req, res) => {
     if (req.url === '/v1/models') {
       res.end(JSON.stringify({ data: [{ id: 'test-model' }] })); return;
     }
-    for await (const _chunk of req) { /* Drain the bounded synthetic model request. */ }
+    let body = ''; for await (const chunk of req) body += chunk;
+    systemPrompts.push(JSON.parse(body).messages.find((m: { role: string }) => m.role === 'system')?.content ?? '');
     const turn = requests++;
     const done = turn >= toolTurns;
     const delta = done ? { content: 'Inspection complete' } : {
@@ -45,10 +47,11 @@ async function runTools(role: string, toolTurns: number, successful = true, repe
       openaiBaseUrl: `http://127.0.0.1:${(backend.address() as { port: number }).port}/v1`,
       model: 'test-model', lockModel: 'test-model', autoSwitch: false };
     const models = new ModelManager(config); await models.discover(); models.switchTo('test-model');
-    const agent = new Agent(config, registry, models, new PermissionManager(), 'Inspect the isolated workspace using supplied tools.');
+    const agent = new Agent(config, registry, models, new PermissionManager(), isolatedPrompt);
+    agent.setModel('test-model');
     const events: AgentEvent[] = [];
     for await (const event of agent.run('Inspect the requested files.', { permissionMode: 'auto_allow' })) events.push(event);
-    return { events, requests, diagnostics: { ...registry.diagnostics }, policy };
+    return { events, requests, systemPrompts, diagnostics: { ...registry.diagnostics }, policy };
   } finally {
     backend.closeAllConnections(); await new Promise<void>(resolve => backend.close(() => resolve()));
     rmSync(root, { recursive: true, force: true });
@@ -56,6 +59,12 @@ async function runTools(role: string, toolTurns: number, successful = true, repe
 }
 
 describe('coding tool-only progress within unchanged worker ceilings', () => {
+  it('sends the initialized isolated prompt and correction notice on the first actual model request', async () => {
+    const prompt = 'You are a bounded coding worker. This fresh workspace starts from an immutable prior implementation.';
+    const result = await runTools('coding', 1, true, false, 1, prompt);
+    expect(result.systemPrompts).toEqual([prompt, prompt]);
+    expect(result.events.some(e => e.type === 'done')).toBe(true);
+  });
   it('finishes after sixteen successful distinct tool-only turns and a final answer', async () => {
     const result = await runTools('coding', 16);
     expect(result.requests).toBe(17);

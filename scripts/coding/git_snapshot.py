@@ -116,6 +116,37 @@ class GitSnapshot:
             raise Rejected("git_operation_failed")
         return output
 
+    def apply_seed(self, patch, allowed_paths, expected_tree):
+        self.git(self.root, ["read-tree", "HEAD"])
+        if patch:
+            self.git(self.root, ["apply", "--cached", "--binary", "--whitespace=nowarn", "-"], data=patch)
+        tree = self.git(self.root, ["write-tree"]).decode().strip()
+        if tree != expected_tree:
+            raise Rejected("correction_seed_tree_identity")
+        files, total = {}, 0
+        entries = self.git(self.root, ["ls-tree", "-r", "-l", "-z", tree], limit=1048576)
+        for entry in entries.split(b"\0"):
+            if not entry:
+                continue
+            metadata, rawpath = entry.split(b"\t", 1)
+            mode, kind, oid, size = metadata.decode().split()
+            path = rawpath.decode("ascii")
+            if not valid(path) or kind != "blob" or mode not in {"100644", "100755"} or int(size) > 262144:
+                raise Rejected("unsafe_correction_seed_tree")
+            total += int(size)
+            if total > 2097152 or len(files) >= 512:
+                raise Rejected("correction_seed_snapshot_budget")
+            data = self.git(self.root, ["cat-file", "blob", oid], limit=262144)
+            files[path] = {"mode": mode, "data": base64.b64encode(data).decode()}
+        for path in self.base.keys() | files.keys():
+            if self.base.get(path) != files.get(path) and (
+                path not in allowed_paths
+                or (path in self.base and self.base[path]["mode"] != "100644")
+                or (path in files and files[path]["mode"] != "100644")
+            ):
+                raise Rejected("correction_seed_changed_protected_path")
+        return files
+
     def diff(self, files):
         if not isinstance(files, dict) or len(files) > 512:
             raise Rejected("snapshot_inventory")

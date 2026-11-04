@@ -18,7 +18,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Validate trusted local contract
-        run: python3 scripts/coding/test_contract.py
+        run: |
+          python3 scripts/coding/test_contract.py
+          python3 scripts/coding/test_correction_seed.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

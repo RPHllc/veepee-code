@@ -9,7 +9,14 @@ createServer(async (req, res) => {
   let calls = [];
   const call = (name, args) => calls.push({ index: calls.length, id: 'tool_' + step + '_' + calls.length, type: 'function', function: { name, arguments: JSON.stringify(args) } });
   if (text.includes('CASE:hang')) return;
-  if (text.includes('CASE:protected-path')) {
+  if (text.includes('CASE:seed-first')) {
+    if (step === 0) call('write_file', { path: 'app.py', content: '# prior worker implementation\ndef add(a,b):\n    return a + b + 1\n' });
+    if (step === 1) call('run_command', { command_id: 'python_unittest' });
+  } else if (text.includes('CASE:seed-second')) {
+    if (step === 0) call(data.messages[0]?.content?.includes('immutable prior implementation') ? 'read_file' : 'missing_seed_notice', { path: 'app.py' });
+    if (step === 1) call('edit_file', { path: 'app.py', old_string: 'return a + b + 1', new_string: 'return a + b' });
+    if (step === 2) call('run_command', { command_id: 'python_unittest' });
+  } else if (text.includes('CASE:protected-path')) {
     if (step === 0) call('write_file', { path: 'tests/test_app.py', content: 'def forged_success(): pass\n' });
     if (step === 1) call('write_file', { path: 'tests/test_app.py', content: 'import unittest\nfrom app import add\nclass Test(unittest.TestCase):\n def test_add(self): self.assertEqual(add(2,3),5)\n' });
     if (step === 2) call('read_file', { path: 'tests/test_app.py' });
