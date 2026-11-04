@@ -32,6 +32,7 @@ from contract import (
     sha,
 )
 from git_snapshot import GitSnapshot
+from correction_seed import load as load_correction_seed
 
 
 DISPATCH_MAY_HAVE_STARTED = False
@@ -80,6 +81,8 @@ class Launcher:
         self.prefix = "vcode-coding-" + job["attempt_id"]
         self.records = []
         self.git = None
+        self.initial_files = None
+        self.seed_images = None
         self.agent = {}
         self.sequence = 0
         self.workspace = None
@@ -507,15 +510,18 @@ class Launcher:
             "agent": self.image(self.profile["agent_image"], "coding-agent"),
             "executor": self.image(self.profile["executor_image"], "coding-executor"),
         }
+        if self.seed_images is not None and self.seed_images != self.images:
+            raise Rejected("correction_seed_source_or_images_changed")
         info = json.loads(self.checked(["info", "--format", "{{json .}}"]))
         if info["OSType"] != "linux" or not any(
             "seccomp" in x for x in info["SecurityOptions"]
         ):
             raise Rejected("linux_seccomp_required")
         repo = self.profile["repositories"][self.job["repository"]]
-        self.git = GitSnapshot(
-            self.capture, repo["path"], self.job["base_sha"], Path(directory) / "git"
-        )
+        if self.git is None:
+            self.git = GitSnapshot(
+                self.capture, repo["path"], self.job["base_sha"], Path(directory) / "git"
+            )
         self.volume = self.prefix + "-workspace"
         self.checked(
             [
@@ -631,7 +637,7 @@ class Launcher:
         config.mkdir(mode=0o755)
         config.chmod(0o755)
         for name, value in [
-            ("base.json", self.git.base),
+            ("base.json", self.git.base if self.initial_files is None else self.initial_files),
             ("proxy.json", self.profile["inference"]),
             (
                 "job.json",
@@ -643,6 +649,7 @@ class Launcher:
                     "max_tool_calls": self.b["tool_calls"],
                     "max_seconds": self.remaining(),
                     **({"writable_paths": repo["allowed_paths"]} if "allowed_paths" in repo else {}),
+                    **({"seeded_workspace": True} if self.initial_files is not None else {}),
                 },
             ),
         ]:
@@ -862,9 +869,23 @@ class Launcher:
         return stopped
 
     def execute(self):
+        global DISPATCH_MAY_HAVE_STARTED
         state, reason, patch, files = "failed", "worker_failure", b"", []
         temporary = tempfile.TemporaryDirectory(prefix="vcode-coding-")
         temp = temporary.name
+        # Reject unusable seeds before Docker inspection, creation or cleanup.
+        if "correction_seed" in self.job:
+            try:
+                patch, self.seed_images, inventory = load_correction_seed(self.profile, self.job)
+                repo = self.profile["repositories"][self.job["repository"]]
+                self.git = GitSnapshot(self.capture, repo["path"], self.job["base_sha"], Path(temp) / "git")
+                self.initial_files = self.git.apply_seed(patch, repo["allowed_paths"], self.job["correction_seed"]["tree_sha"])
+                if self.git.diff(self.initial_files)[1] != inventory:
+                    raise Rejected("correction_seed_inventory_mismatch")
+            except BaseException:
+                temporary.cleanup()
+                raise
+        DISPATCH_MAY_HAVE_STARTED = True
         artifact_complete = False
         artifact_error = None
         try:
@@ -1231,7 +1252,9 @@ def main():
         # that the original execution is absent or stopped. Only recover can reconcile.
         DISPATCH_MAY_HAVE_STARTED = True
         raise Rejected("attempt_already_exists")
-    DISPATCH_MAY_HAVE_STARTED = True
+    # Legacy execution can dispatch immediately; seeded execution first validates
+    # immutable files and its index-only tree, then sets the flag before Docker.
+    DISPATCH_MAY_HAVE_STARTED = "correction_seed" not in job
     try:
         return launcher.execute()
     finally:

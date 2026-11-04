@@ -18,6 +18,7 @@ const inputSchema = z.object({
   max_tool_calls: z.number().int().min(1).max(64),
   max_seconds: z.number().int().min(1).max(600),
   writable_paths: writablePathsSchema.optional(),
+  seeded_workspace: z.literal(true).optional(),
 }).strict();
 const pending = new Map<number, (value: { success: boolean; output: string; error?: string }) => void>();
 let sequence = 0;
@@ -53,7 +54,9 @@ async function main() {
     proxyUrl: '', model: input.model, lockModel: input.model, autoSwitch: false, fallbackModels: [],
     numCtx: 16384, agentlensUrl: null };
   const models = new ModelManager(config); await models.discover(); models.switchTo(input.model);
-  const agent = new Agent(config, registry, models, new PermissionManager(), prompt);
+  const seedNotice = input.seeded_workspace
+    ? ' This fresh workspace starts from an immutable prior implementation. Inspect its current files and target the supplied corrections; rerun the approved tests. Prior work is not technical approval.' : '';
+  const agent = new Agent(config, registry, models, new PermissionManager(), prompt + seedNotice);
   const timing = { model_turns: 0, generation_duration_ms: 0, output_tokens: 0, first_event_ms: [] as number[] };
   agent.setTelemetry(event => {
     if (event.kind === 'model_turn_started') timing.model_turns++;

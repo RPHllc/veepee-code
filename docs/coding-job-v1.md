@@ -96,6 +96,27 @@ merely because transport/process supervision was lost. Budget ceilings and aggre
 resource semantics are in [sandbox documentation](coding-worker.md#local-use-and-resources).
 The input JSON is bounded to16KiB, instructions to8000 UTF-8 bytes.
 
+### Immutable correction seed
+
+Only a repository explicitly enrolled with `allow_correction_seeds: true` and
+literal `allowed_paths` can use an optional `correction_seed`. The reference has
+exactly `task_id`, `attempt_id`, `artifact_digest`, `patch_sha256`, and `tree_sha`.
+The artifact digest is SHA256 of canonical `{filename: SHA256(bytes)}` across all
+six retained artifact files. `tree_sha` is the40-character Git tree identity.
+There are no caller-selected host paths, source blobs or URLs.
+
+The launcher reads the prior UUID only under its protected artifact directory,
+requires a free attempt lock, verifies bounded regular files and exact hashes,
+manifest, original launch/result identities, current profile/images, confirmed
+stop and a complete patch. It reconstructs the seed against a fresh approved base
+using index-only Git before Docker effects. Only enrolled regular source changes
+are admitted. The new disposable workspace receives that tree, but the original
+Git base/HEAD remains unchanged for the final full patch. All tests run again;
+prior results or technical reviews never approve the correction. The launch's
+immutable request retains the seed reference, and replay/recovery retain the new
+original attempt identity. Omitting the feature preserves existing profiles and
+wire requests. Cross-profile or cross-image seeds are not supported.
+
 ## Job output and integrity
 
 The foreground CLI emits one JSON result, also durably stored in the protected
