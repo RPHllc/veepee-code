@@ -108,7 +108,7 @@ There are no caller-selected host paths, source blobs or URLs.
 The launcher reads the prior UUID only under its protected artifact directory,
 requires a free attempt lock, verifies bounded regular files and exact hashes,
 manifest, original launch/result identities, current profile/images, confirmed
-stop and a complete patch. It reconstructs the seed against a fresh approved base
+stop and a complete failed, completed or timed-out patch. It reconstructs the seed against a fresh approved base
 using index-only Git before Docker effects. Only enrolled regular source changes
 are admitted. The new disposable workspace receives that tree, but the original
 Git base/HEAD remains unchanged for the final full patch. All tests run again;

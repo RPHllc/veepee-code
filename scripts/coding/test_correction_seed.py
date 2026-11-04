@@ -135,6 +135,17 @@ class CorrectionSeed(unittest.TestCase):
     def test_running_state_refuses_before_docker(self):
         self.report["state"] = "running";self.reseal();self.assert_no_docker()
 
+    def test_safely_stopped_timed_out_complete_seed_is_accepted(self):
+        self.report.update(state="timed_out", termination_reason="job_timed_out")
+        self.reseal()
+        patch, images, inventory = load(self.profile, request(self.current, self.profile))
+        self.assertEqual(sha(patch), self.current["correction_seed"]["patch_sha256"])
+        self.assertEqual(inventory, self.report["changed_files"])
+
+    def test_uncertain_timed_out_seed_refuses_before_docker(self):
+        self.report.update(state="timed_out", termination_reason="job_timed_out", execution_stopped=False)
+        self.reseal();self.assert_no_docker()
+
     def test_wrong_tree_refuses_before_docker(self):
         self.current["correction_seed"]["tree_sha"] = "0" * 40;self.assert_no_docker()
 

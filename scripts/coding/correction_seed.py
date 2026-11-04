@@ -89,7 +89,7 @@ def load(profile, job):
             or result["approved_profile_sha256"] != profile_hash
             or launch["source_images"] != [profile["agent_image"], profile["executor_image"]]
             or result["model_id"] != profile["inference"]["model"]
-            or result["state"] not in {"failed", "completed"}
+            or result["state"] not in {"failed", "completed", "timed_out"}
             or result["execution_stopped"] is not True
             or result["termination_reason"] in {"cleanup_unconfirmed", "execution_stop_unconfirmed"}
             or result["command_history_status"] != "recorded"
