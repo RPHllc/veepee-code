@@ -422,7 +422,11 @@ class Launcher:
                 [
                     "create",
                     *self.flags(name),
-                    *self.mount(),
+                    *self.mount("allowed_paths" not in repo),
+                    *([
+                        "--tmpfs", f"/tmp:rw,noexec,nosuid,nodev,size={self.b['workspace_mb']}m,mode=1777",
+                        "--env", "HOME=/tmp", "--env", "TMPDIR=/tmp",
+                    ] if "allowed_paths" in repo else []),
                     self.profile["executor_image"],
                     "timeout",
                     "--signal=KILL",
@@ -638,6 +642,7 @@ class Launcher:
                     "commands": repo["commands"],
                     "max_tool_calls": self.b["tool_calls"],
                     "max_seconds": self.remaining(),
+                    **({"writable_paths": repo["allowed_paths"]} if "allowed_paths" in repo else {}),
                 },
             ),
         ]:

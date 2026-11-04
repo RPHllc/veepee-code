@@ -7,13 +7,48 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { WorkerPolicy } from '../src/worker-policy.js';
 import { ContextManager } from '../src/context.js';
 const data = { schema_version: 1, role: 'coding', deny_unlisted_tools: true, forbid_direct_tool_execute: true, allowed_tools: CODING_TOOLS, max_tool_calls_per_job: 32, max_job_seconds: 60 };
-function harness(rpc = async () => ({ success: true, output: 'real process record' })) {
+function harness(rpc = async () => ({ success: true, output: 'real process record' }), writablePaths?: string[]) {
   const root = mkdtempSync(join(tmpdir(), 'coding-unit-'));
   const registry = new ToolRegistry(new WorkerPolicy(data));
-  for (const t of codingTools(root, ['python_unittest'], rpc)) registry.register(t);
+  try {
+    for (const t of codingTools(root, ['python_unittest'], rpc, writablePaths)) registry.register(t);
+  } catch (error) { rmSync(root, { recursive: true, force: true }); throw error; }
   return { root, registry, close: () => rmSync(root, { recursive: true, force: true }) };
 }
 describe('isolated coding tools reuse policy execution boundary', () => {
+  it('enforces exact enrolled writes while allowing bounded reads of protected repository files', async () => {
+    const h = harness(undefined, ['app.py', 'src/new.py']);
+    try {
+      mkdirSync(join(h.root, 'tests'));
+      writeFileSync(join(h.root, 'README.md'), 'protected requirements');
+      writeFileSync(join(h.root, 'tests/test_app.py'), 'protected test');
+      writeFileSync(join(h.root, 'app.py'), 'return a - b');
+      for (const path of ['README.md', 'tests/test_app.py', 'app.py.bak', 'app.py.coding-next', './app.py', 'src/../app.py']) {
+        expect((await h.registry.execute('write_file', { path, content: 'unauthorized' })).success).toBe(false);
+      }
+      expect((await h.registry.execute('edit_file', { path: 'tests/test_app.py', old_string: 'protected test', new_string: 'pass' })).success).toBe(false);
+      expect((await h.registry.execute('read_file', { path: 'README.md' })).output).toBe('protected requirements');
+      expect((await h.registry.execute('read_file', { path: 'tests/test_app.py' })).output).toBe('protected test');
+      expect((await h.registry.execute('edit_file', { path: 'app.py', old_string: 'a - b', new_string: 'a + b' })).success).toBe(true);
+      expect((await h.registry.execute('write_file', { path: 'src/new.py', content: 'allowed source' })).success).toBe(true);
+      expect(readFileSync(join(h.root, 'app.py'), 'utf8')).toBe('return a + b');
+      expect(readFileSync(join(h.root, 'tests/test_app.py'), 'utf8')).toBe('protected test');
+      expect(readFileSync(join(h.root, 'README.md'), 'utf8')).toBe('protected requirements');
+      expect((await h.registry.execute('list_files', {})).output).not.toContain('.coding-next');
+      symlinkSync('tests/test_app.py', join(h.root, 'alias.py'));
+      expect((await h.registry.execute('write_file', { path: 'alias.py', content: 'bad' })).success).toBe(false);
+      rmSync(join(h.root, 'app.py'));
+      symlinkSync('tests/test_app.py', join(h.root, 'app.py'));
+      expect((await h.registry.execute('write_file', { path: 'app.py', content: 'bad' })).success).toBe(false);
+      rmSync(join(h.root, 'app.py'));
+      linkSync(join(h.root, 'tests/test_app.py'), join(h.root, 'app.py'));
+      expect((await h.registry.execute('write_file', { path: 'app.py', content: 'bad' })).success).toBe(false);
+      expect(readFileSync(join(h.root, 'tests/test_app.py'), 'utf8')).toBe('protected test');
+    } finally { h.close(); }
+  });
+  it.each([[], ['app.py', 'app.py'], ['*.py'], ['/app.py'], ['src/../app.py'], ['src//app.py'], ['tests/'], ['.git/config'], ['.env'], ['app.py.coding-next'], ['app.py\n'], ['x'.repeat(241)], Array.from({ length: 33 }, (_, i) => `file${i}.py`)].map(paths => [paths]))('rejects malformed protected write policy %j', paths => {
+    expect(() => harness(undefined, paths)).toThrow();
+  });
   it('keeps extended deadlines coding-only and bounded', () => {
     expect(new WorkerPolicy({ ...data, max_job_seconds: 600 }).deadlineMs).toBe(600000);
     expect(() => new WorkerPolicy({ ...data, max_job_seconds: 601 })).toThrow();

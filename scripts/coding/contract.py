@@ -174,7 +174,31 @@ def load_profile(path, *, recover=False):
         repo_fields = ["path", "base_sha", "commands"]
         if isinstance(repo, dict) and "max_wall_seconds" in repo:
             repo_fields.append("max_wall_seconds")
+        if isinstance(repo, dict) and "allowed_paths" in repo:
+            repo_fields.append("allowed_paths")
         keys(repo, repo_fields)
+        if "allowed_paths" in repo:
+            paths = repo["allowed_paths"]
+            if (
+                not isinstance(paths, list)
+                or not 1 <= len(paths) <= 32
+                or any(
+                    not isinstance(path, str)
+                    or not re.fullmatch(r"[a-zA-Z0-9_./ -]{1,240}", path)
+                    or path.startswith("/")
+                    or any(
+                        part in ("", ".", "..")
+                        or part.startswith("-")
+                        or part.lower() == ".git"
+                        or part.endswith(".coding-next")
+                        or re.fullmatch(r"(?:\.env(?:\..*)?|id_rsa|id_ed25519|credentials|secrets(?:\..*)?)", part, re.I)
+                        for part in path.split("/")
+                    )
+                    for path in paths
+                )
+                or len(set(paths)) != len(paths)
+            ):
+                raise Rejected("literal_allowed_paths_required")
         if "max_wall_seconds" in repo:
             integer(repo["max_wall_seconds"], 5, 600)
         if not Path(repo["path"]).is_absolute() or (

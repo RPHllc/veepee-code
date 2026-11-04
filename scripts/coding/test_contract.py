@@ -163,6 +163,19 @@ class Contract(unittest.TestCase):
             with self.assertRaises((Rejected, ValueError)):
                 load_profile(self.path)
 
+    def test_literal_write_paths_require_protected_profile_and_cannot_be_requested(self):
+        self.assertNotIn("allowed_paths", load_profile(self.profile_file())["repositories"]["fixture"])
+        self.profile["repositories"]["fixture"]["allowed_paths"] = ["app.py", "src/new.py"]
+        self.assertEqual(load_profile(self.profile_file())["repositories"]["fixture"]["allowed_paths"], ["app.py", "src/new.py"])
+        for field in ("allowed_paths", "writable_paths"):
+            with self.assertRaises(Rejected):
+                request({**self.value, field: ["tests/test_app.py"]}, self.profile)
+        for paths in ([], ["app.py", "app.py"], ["*.py"], ["/app.py"], ["src/../app.py"], ["src//app.py"], ["tests/"], [".git/config"], [".env"], ["app.py.coding-next"], ["app.py\n"], [None], "app.py", ["x" * 241], [f"file{i}.py" for i in range(33)]):
+            with self.subTest(paths=paths):
+                self.profile["repositories"]["fixture"]["allowed_paths"] = paths
+                with self.assertRaises(Rejected):
+                    load_profile(self.profile_file())
+
     def test_duplicate_json_keys_and_input_bounds(self):
         self.path.write_text('{"contract_version":1,"contract_version":2}')
         with self.assertRaises(Rejected):
