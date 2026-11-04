@@ -34,6 +34,17 @@ stderr retains its initial2048 and latest2048 bytes when truncated, preserving
 final test diagnostics within the existing4096-byte cap. Binary stdout capture,
 hashing and truncation policy are unchanged.
 
+Repositories may additionally enroll `allowed_paths`:1–32 unique literal relative
+file paths, without wildcards, traversal, secrets or Git metadata. The protected
+launcher copies this policy into read-only agent configuration as `writable_paths`;
+model requests cannot choose or expand it. Write/edit tools require exact membership,
+while bounded repository reads remain available. Approved commands, including final
+tests, mount the entire workspace read-only for these profiles. A separate `/tmp`
+tmpfs, bounded by the existing workspace budget and process memory limit, permits
+temporary application data; it is noexec/nosuid/nodev. Omitting enrollment preserves
+legacy write and mount behavior. This protects file integrity; independent review
+must still assess test meaning and application behavior.
+
 ```json
 {
   "contract_version": 1,

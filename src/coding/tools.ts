@@ -8,6 +8,11 @@ export const CODING_TOOLS = ['read_file', 'list_files', 'search_files', 'write_f
 export type RPC = (method: 'run_command' | 'git_status' | 'git_diff', params: Record<string, unknown>) => Promise<ToolResult>;
 const pathSchema = z.string().min(1).max(240);
 const secretName = /^(?:\.env(?:\..*)?|id_rsa|id_ed25519|credentials|secrets(?:\..*)?)$/i;
+export const writablePathsSchema = z.array(pathSchema.refine(path =>
+  !/[^a-zA-Z0-9_./ -]/.test(path) && !path.startsWith('/') && path.split('/').every(part =>
+    part !== '' && part !== '.' && part !== '..' && !part.startsWith('-')
+    && part.toLowerCase() !== '.git' && !secretName.test(part) && !part.endsWith('.coding-next')),
+)).min(1).max(32).refine(paths => new Set(paths).size === paths.length);
 
 export function safePath(root: string, path: string, allowMissing = false): string {
   if (!/^[a-zA-Z0-9_./ -]+$/.test(path) || path.startsWith('/') || path.endsWith('/')) throw new Error('Workspace-relative path required');
@@ -28,7 +33,8 @@ export function safePath(root: string, path: string, allowMissing = false): stri
   return current;
 }
 
-export function codingTools(root: string, commands: string[], rpc: RPC): ToolDef[] {
+export function codingTools(root: string, commands: string[], rpc: RPC, writablePaths?: string[]): ToolDef[] {
+  const writable = writablePaths === undefined ? undefined : new Set(writablePathsSchema.parse(writablePaths));
   // The upstream agent can run tool batches concurrently. Serialize every workspace
   // operation, including the complete executor lifetime, so hostile test code cannot
   // race an agent read/write after path validation.
@@ -50,6 +56,7 @@ export function codingTools(root: string, commands: string[], rpc: RPC): ToolDef
     try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
   };
   const write = (path: string, content: string) => {
+    if (writable !== undefined && !writable.has(path)) throw new Error('Project write path denied');
     const p = safePath(root, path, true);
     if (Buffer.byteLength(content) > 262144) throw new Error('File too large');
     mkdirSync(dirname(p), { recursive: true });

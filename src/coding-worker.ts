@@ -8,7 +8,7 @@ import { WorkerPolicy } from './worker-policy.js';
 import { ToolRegistry } from './tools/registry.js';
 import { ModelManager } from './models.js';
 import { PermissionManager } from './permissions.js';
-import { codingTools, CODING_TOOLS, type RPC } from './coding/tools.js';
+import { codingTools, CODING_TOOLS, writablePathsSchema, type RPC } from './coding/tools.js';
 
 const inputSchema = z.object({
   instructions: z.string().min(1).max(8000),
@@ -17,6 +17,7 @@ const inputSchema = z.object({
   commands: z.array(z.enum(['python_unittest', 'node_test', 'python_syntax'])).min(1).max(3),
   max_tool_calls: z.number().int().min(1).max(64),
   max_seconds: z.number().int().min(1).max(600),
+  writable_paths: writablePathsSchema.optional(),
 }).strict();
 const pending = new Map<number, (value: { success: boolean; output: string; error?: string }) => void>();
 let sequence = 0;
@@ -46,7 +47,7 @@ async function main() {
   const policy = new WorkerPolicy({ schema_version: 1, role: 'coding', deny_unlisted_tools: true,
     forbid_direct_tool_execute: true, allowed_tools: CODING_TOOLS, max_tool_calls_per_job: input.max_tool_calls, max_job_seconds: input.max_seconds });
   const registry = new ToolRegistry(policy);
-  for (const tool of codingTools('/workspace', input.commands, rpc)) registry.register(tool);
+  for (const tool of codingTools('/workspace', input.commands, rpc, input.writable_paths)) registry.register(tool);
   policy.validateAvailable(registry.names());
   const config = { ...loadConfig(''), llmBackend: 'openai' as const, openaiBaseUrl: input.inference_url,
     proxyUrl: '', model: input.model, lockModel: input.model, autoSwitch: false, fallbackModels: [],
