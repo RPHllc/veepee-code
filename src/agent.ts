@@ -1937,6 +1937,7 @@ export class Agent {
           };
           const resultContent = result.success ? result.output : `Error: ${result.error}`;
           stepResults[idx] = resultContent;
+          stepSuccess[idx] = result.success;
           this.context.addToolResult(name, resultContent, (args.path as string) || undefined, result.success);
         }
       } else {

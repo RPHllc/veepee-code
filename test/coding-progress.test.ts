@@ -13,9 +13,9 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { WorkerPolicy } from '../src/worker-policy.js';
 
 /** Real Agent + isolated workspace tools; only model inference is synthetic. */
-async function runTools(role: string, toolTurns: number, successful = true, repeat = false) {
+async function runTools(role: string, toolTurns: number, successful = true, repeat = false, batchSize = 1) {
   const root = mkdtempSync(join(tmpdir(), 'coding-progress-'));
-  for (let i = 0; i < 24; i++) writeFileSync(join(root, `file${i}.txt`), `Observed file ${i}`);
+  for (let i = 0; i < 48; i++) writeFileSync(join(root, `file${i}.txt`), `Observed file ${i}`);
   let requests = 0;
   const backend = createServer(async (req, res) => {
     if (req.url === '/v1/models') {
@@ -24,11 +24,12 @@ async function runTools(role: string, toolTurns: number, successful = true, repe
     for await (const _chunk of req) { /* Drain the bounded synthetic model request. */ }
     const turn = requests++;
     const done = turn >= toolTurns;
-    const path = `${successful ? 'file' : 'missing'}${repeat ? 0 : turn}.txt`;
     const delta = done ? { content: 'Inspection complete' } : {
-      tool_calls: [{ index: 0, id: `call_${turn}`, type: 'function', function: {
-        name: 'read_file', arguments: JSON.stringify({ path }),
-      } }],
+      tool_calls: Array.from({ length: batchSize }, (_, index) => ({
+        index, id: `call_${turn}_${index}`, type: 'function', function: {
+          name: 'read_file', arguments: JSON.stringify({ path: `${successful ? 'file' : 'missing'}${repeat ? 0 : turn * batchSize + index}.txt` }),
+        },
+      })),
     };
     res.setHeader('Content-Type', 'text/event-stream');
     res.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: done ? 'stop' : 'tool_calls' }] })}\n\ndata: [DONE]\n\n`);
@@ -72,8 +73,23 @@ describe('coding tool-only progress within unchanged worker ceilings', () => {
     expect(result.events.some(e => e.type === 'error' && e.error?.includes('15 turns with no visible output'))).toBe(true);
     expect(result.events.some(e => e.type === 'done')).toBe(false);
   });
-  it.each(['research', 'default'])('preserves the no-visible-output guard for %s', async role => {
-    const result = await runTools(role, 16);
+  it('counts actual successful parallel read results as coding progress', async () => {
+    const result = await runTools('coding', 16, true, false, 2);
+    expect(result.requests).toBe(17);
+    expect(result.diagnostics.actual_tool_calls).toBe(32);
+    expect(result.events.filter(e => e.type === 'tool_result')).toHaveLength(32);
+    expect(result.events.filter(e => e.type === 'tool_result').every(e => e.success)).toBe(true);
+    expect(result.events.some(e => e.type === 'done')).toBe(true);
+    expect(result.events.filter(e => e.type === 'error')).toEqual([]);
+  });
+  it('does not count failed parallel coding calls as progress', async () => {
+    const result = await runTools('coding', 16, false, false, 2);
+    expect(result.requests).toBe(15);
+    expect(result.events.some(e => e.type === 'error' && e.error?.includes('15 turns with no visible output'))).toBe(true);
+    expect(result.events.some(e => e.type === 'done')).toBe(false);
+  });
+  it.each([['research', 1], ['research', 2], ['default', 1], ['default', 2]] as const)('preserves the no-visible-output guard for %s with %d calls per turn', async (role, batchSize) => {
+    const result = await runTools(role, 16, true, false, batchSize);
     expect(result.requests).toBe(15);
     expect(result.events.some(e => e.type === 'error' && e.error?.includes('15 turns with no visible output'))).toBe(true);
     expect(result.events.some(e => e.type === 'done')).toBe(false);
