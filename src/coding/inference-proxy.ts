@@ -1,9 +1,12 @@
 /** Fixed inference relay, inside a separate IPv4/IPv6 egress firewall namespace. */
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
-const config = JSON.parse(readFileSync('/config/proxy.json', 'utf8')) as { base_url: string; model: string };
+const config = JSON.parse(readFileSync('/config/proxy.json', 'utf8')) as { base_url: string; model: string; max_output_tokens?: number };
+// Protected enrollment chooses a bounded ceiling; existing profiles retain 2048.
+const outputLimit = config.max_output_tokens === undefined ? 2048 : config.max_output_tokens;
+if (!Number.isInteger(outputLimit) || outputLimit < 256 || outputLimit > 8192) throw new Error('output budget');
 let calls = 0;
-const server = createServer(async (req, res) => {
+export const server = createServer(async (req, res) => {
   const controller = new AbortController();
   const intake = setTimeout(() => { controller.abort(); req.destroy(); }, 5000);
   res.once('close', () => controller.abort());
@@ -16,7 +19,7 @@ const server = createServer(async (req, res) => {
       for await (const chunk of req) { bytes += chunk.length; if (bytes > 262144) throw new Error('intake'); chunks.push(chunk); }
       const data = JSON.parse(Buffer.concat(chunks).toString());
       if (data.model !== config.model || !Array.isArray(data.messages) || data.messages.length > 150 || (data.n !== undefined && data.n !== 1)) throw new Error('profile');
-      data.max_tokens = Math.min(2048, Number.isInteger(data.max_tokens) && data.max_tokens > 0 ? data.max_tokens : 2048);
+      data.max_tokens = Math.min(outputLimit, Number.isInteger(data.max_tokens) && data.max_tokens > 0 ? data.max_tokens : outputLimit);
       body = JSON.stringify(data);
     }
     clearTimeout(intake);
