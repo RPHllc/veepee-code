@@ -209,8 +209,16 @@ class Launcher:
                     if not chunk:
                         selector.unregister(key.fileobj)
                         continue
-                    target = output if key.data == "out" else errors
-                    cap = limit if key.data == "out" else 4096
+                    if key.data == "err":
+                        # Keep the initial context and latest diagnostic/root cause
+                        # within the same fixed stderr byte ceiling across chunks.
+                        errors.extend(chunk)
+                        if len(errors) > 4096:
+                            truncated = True
+                            errors[:] = errors[:2048] + errors[-2048:]
+                        continue
+                    target = output
+                    cap = limit
                     room = max(0, cap - len(target))
                     target.extend(chunk[:room])
                     if len(chunk) > room:

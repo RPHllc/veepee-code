@@ -2100,8 +2100,10 @@ export class Agent {
         }
       }
 
-      // Detect turns with no user-visible content
-      if (!fullContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim()) {
+      // Isolated coding jobs can make progress through successful tools without
+      // narrating. Keep the independent total-turn, tool and stuck-loop guards.
+      const codingToolProgress = this.registry.policy?.role === 'coding' && stepSuccess.some(Boolean);
+      if (!fullContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim() && !codingToolProgress) {
         turnsWithoutUserContent++;
         if (turnsWithoutUserContent >= MAX_TURNS_WITHOUT_OUTPUT) {
           yield { type: 'error', error: `Stopped: ${MAX_TURNS_WITHOUT_OUTPUT} turns with no visible output. The model may be stuck.` };

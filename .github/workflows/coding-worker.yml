@@ -26,7 +26,7 @@ jobs:
       - name: Validate protected inference relay and coding tools
         run: |
           npm ci --ignore-scripts
-          npx vitest run test/coding-inference-proxy.test.ts test/coding-tools.test.ts test/worker-policy.test.ts
+          npx vitest run test/coding-inference-proxy.test.ts test/coding-tools.test.ts test/worker-policy.test.ts test/coding-progress.test.ts
       - name: Build distinct Linux amd64 executor and agent
         run: |
           docker build --target executor --build-arg VCS_REF=${SOURCE_SHA} -f Dockerfile.coding -t vcode-coding-executor:dev .
