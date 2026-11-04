@@ -13,6 +13,13 @@ Linux platform. The examples contain **nonusable placeholder identities**; repla
 them only with independently inspected development builds and disposable input.
 No credential is created or read from production by these examples.
 
+The protected `inference` record may also specify `max_output_tokens`, an integer
+from256 through8192. Omission retains the original2048-token per-response ceiling.
+The relay clamps model-requested output to that enrolled ceiling; a job cannot
+choose it. This permits a real implementation plus bounded model reasoning to
+fit in one tool-call response. Existing wall-time, tool-call, model-call, context,
+response-byte and network ceilings remain in force.
+
 ```json
 {
   "contract_version": 1,

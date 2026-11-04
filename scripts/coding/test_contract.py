@@ -89,6 +89,19 @@ class Contract(unittest.TestCase):
                 with self.assertRaises(Rejected):
                     request({**self.value, field: value}, self.profile)
 
+    def test_output_budget_is_protected_bounded_and_backward_compatible(self):
+        self.assertNotIn("max_output_tokens", load_profile(self.profile_file())["inference"])
+        self.profile["inference"]["max_output_tokens"] = 8192
+        p = load_profile(self.profile_file())
+        self.assertEqual(p["inference"]["max_output_tokens"], 8192)
+        with self.assertRaises(Rejected):
+            request({**self.value, "max_output_tokens": 8192}, p)
+        for value in (True, 0, 255, 8193, "8192", None):
+            with self.subTest(value=value):
+                self.profile["inference"]["max_output_tokens"] = value
+                with self.assertRaises(Rejected):
+                    load_profile(self.profile_file())
+
     def test_budgets_cannot_expand_ceiling_or_hide_types(self):
         for field, value in [
             ("wall_seconds", 181),

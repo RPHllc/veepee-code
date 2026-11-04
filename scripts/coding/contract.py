@@ -140,7 +140,12 @@ def load_profile(path, *, recover=False):
         raise Rejected("inference_network")
     protected(profile["artifact_directory"], directory=True)
     inference = profile["inference"]
-    keys(inference, ["base_url", "model"])
+    inference_fields = ["base_url", "model"]
+    if isinstance(inference, dict) and "max_output_tokens" in inference:
+        inference_fields.append("max_output_tokens")
+    keys(inference, inference_fields)
+    if "max_output_tokens" in inference:
+        integer(inference["max_output_tokens"], 256, 8192)
     u = urlsplit(inference["base_url"])
     ipaddress.IPv4Address(u.hostname)
     if (

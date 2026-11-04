@@ -19,6 +19,14 @@ jobs:
           python-version: '3.12'
       - name: Validate trusted local contract
         run: python3 scripts/coding/test_contract.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Validate protected inference relay and coding tools
+        run: |
+          npm ci --ignore-scripts
+          npx vitest run test/coding-inference-proxy.test.ts test/coding-tools.test.ts
       - name: Build distinct Linux amd64 executor and agent
         run: |
           docker build --target executor --build-arg VCS_REF=${SOURCE_SHA} -f Dockerfile.coding -t vcode-coding-executor:dev .
