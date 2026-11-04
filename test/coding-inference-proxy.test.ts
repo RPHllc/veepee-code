@@ -30,7 +30,7 @@ async function start(limit?: unknown) {
 
 async function call(body: Record<string, unknown>, path = '/v1/chat/completions') {
   return await new Promise<number>((resolve, reject) => {
-    const r = request({ host: '127.0.0.1', port: 3030, method: 'POST', path,
+    const r = request({ host: '127.0.0.1', port: 3030, method: 'POST', path, agent: false,
       headers: { 'Content-Type': 'application/json' } }, response => {
       response.resume(); response.on('end', () => resolve(response.statusCode!));
     });
