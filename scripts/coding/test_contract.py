@@ -385,5 +385,34 @@ obj.write(sys.argv[2],json.loads(sys.argv[3]))
                     (self.root / name).unlink(missing_ok=True)
 
 
+class ExtendedRuntimeDeadlines(unittest.TestCase):
+    def test_egress_guard_uses_bounded_job_lifetime(self):
+        import os, runpy, subprocess, sys
+        from unittest.mock import patch
+        script = Path(__file__).with_name("netguard.py")
+        for seconds in (180, 600):
+            with patch.object(sys, "argv", [str(script), "192.0.2.1", "8000", "172.30.0.0/16", str(seconds)]), patch.object(subprocess, "run") as rules, patch.object(os, "execvp") as execute:
+                runpy.run_path(str(script))
+                self.assertTrue(rules.called)
+                execute.assert_called_once_with("timeout", ["timeout", "--signal=KILL", str(seconds), "sleep", str(seconds + 1)])
+        with patch.object(sys, "argv", [str(script), "192.0.2.1", "8000", "172.30.0.0/16", "601"]), patch.object(subprocess, "run") as rules, patch.object(os, "execvp") as execute:
+            with self.assertRaises(AssertionError):
+                runpy.run_path(str(script))
+            rules.assert_not_called(); execute.assert_not_called()
+
+    def test_workspace_lease_covers_same_deadline_and_artifact_grace(self):
+        from launcher import Launcher
+        obj = object.__new__(Launcher)
+        obj.prefix = "test-fixed-identity"
+        obj.profile = {"executor_image": "sha256:" + "a" * 64}
+        obj.flags = lambda name: ["--name", name]
+        obj.mount = lambda: []
+        for remaining in (60, 180, 600):
+            obj.remaining = lambda: remaining
+            command = obj.workspace_lease_command()
+            self.assertEqual(command[-5:], ["timeout", "--signal=KILL", str(remaining + 20), "sleep", str(remaining + 21)])
+            self.assertEqual(obj.holder, obj.prefix + "-workspace-lease")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
