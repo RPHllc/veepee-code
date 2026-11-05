@@ -917,6 +917,7 @@ class Launcher:
                 reason = (
                     "policy_denied" if self.agent.get("denied") else {
                         "internal_failure": "agent_internal_failure",
+                        "agent_failure": "agent_failure",
                         "turn_budget_exhausted": "agent_turn_budget_exhausted",
                         "tool_budget_exhausted": "agent_tool_budget_exhausted",
                         "command_budget_exhausted": "agent_command_budget_exhausted",

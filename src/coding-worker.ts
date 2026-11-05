@@ -91,4 +91,4 @@ async function main() {
   emit({ type: 'agent_result', finished: done && !error && !denied, denied, ...(outcome ? { error: outcome } : {}), output, events, diagnostics: { ...registry.diagnostics, ...timing } });
   lines.close(); process.stdin.destroy();
 }
-main().catch(() => { emit({ type: 'agent_result', finished: false, denied: false, error: 'coding_agent_failed' }); process.exitCode = 1; lines.close(); process.stdin.destroy(); });
+main().catch(() => { emit({ type: 'agent_result', finished: false, denied: false, error: 'internal_failure' }); process.exitCode = 1; lines.close(); process.stdin.destroy(); });
