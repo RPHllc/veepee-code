@@ -9,7 +9,23 @@ createServer(async (req, res) => {
   let calls = [];
   const call = (name, args) => calls.push({ index: calls.length, id: 'tool_' + step + '_' + calls.length, type: 'function', function: { name, arguments: JSON.stringify(args) } });
   if (text.includes('CASE:hang')) return;
-  if (text.includes('CASE:seed-first')) {
+  if (text.includes('CASE:recover-edit')) {
+    if (step === 0) call('edit_file', { path: 'app.py', old_string: 'no match', new_string: 'bad' });
+    if (step === 1) call('edit_file', { path: 'app.py', old_string: 'return a - b', new_string: 'return a + b' });
+    if (step === 2) call('run_command', { command_id: 'python_unittest' });
+  } else if (text.includes('CASE:denial-batch')) {
+    if (step === 0) {
+      call('edit_file', { path: 'tests/test_app.py', old_string: 'absent', new_string: 'bad' });
+      call('write_file', { path: 'app.py', content: 'forged' });
+    }
+  } else if (text.includes('CASE:command-slots')) {
+    if (step < 7) call('run_command', { command_id: 'python_unittest' });
+  } else if (text.includes('CASE:command-exhaust')) {
+    if (step < 8) call('run_command', { command_id: 'python_unittest' });
+    else call('write_file', { path: 'app.py', content: 'forged' });
+  } else if (text.includes('CASE:final-turn')) {
+    if (data.tools?.length) call('read_file', { path: `file${step}.txt` });
+  } else if (text.includes('CASE:seed-first')) {
     if (step === 0) call('write_file', { path: 'app.py', content: '# prior worker implementation\ndef add(a,b):\n    return a + b + 1\n' });
     if (step === 1) call('run_command', { command_id: 'python_unittest' });
   } else if (text.includes('CASE:seed-second')) {

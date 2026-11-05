@@ -472,6 +472,41 @@ class ExtendedRuntimeDeadlines(unittest.TestCase):
                 runpy.run_path(str(script))
             rules.assert_not_called(); execute.assert_not_called()
 
+    def test_nonzero_agent_exit_keeps_failure_evidence_and_cannot_claim_completion(self):
+        from launcher import Launcher
+        obj = object.__new__(Launcher)
+        for finished in (False, True):
+            obj.agent = {"finished": finished, "denied": False, "error": "internal_failure", "events": []}
+            obj.accept_agent_exit(1)
+            self.assertFalse(obj.agent["finished"])
+            self.assertEqual(obj.agent["error"], "internal_failure")
+        obj.agent = {"finished": True, "denied": True}
+        obj.accept_agent_exit(1)
+        self.assertTrue(obj.agent["denied"])
+        self.assertFalse(obj.agent["finished"])
+        obj.agent = {}
+        with self.assertRaisesRegex(Rejected, "agent_interrupted"):
+            obj.accept_agent_exit(1)
+
+    def test_agent_budget_reserves_validation_and_sealing_without_increasing_deadline(self):
+        from launcher import Launcher
+        obj = object.__new__(Launcher)
+        obj.job = {"repository": "fixture"}
+        obj.profile = {"repositories": {"fixture": {"commands": ["python_unittest", "python_syntax"]}}}
+        obj.b = {"command_seconds": 30}
+        for remaining in (180, 600):
+            obj.remaining = lambda: remaining
+            seconds = obj.agent_seconds()
+            self.assertGreaterEqual(seconds, 1)
+            self.assertLess(seconds, remaining)
+            self.assertEqual(seconds + 75, remaining)
+        for remaining in (5, 60, 75):
+            obj.remaining = lambda: remaining
+            with self.assertRaisesRegex(Rejected, "insufficient_finalization_budget"):
+                obj.agent_seconds()
+        obj.remaining = lambda: 600
+        self.assertEqual(obj.agent_seconds(), 525)
+
     def test_workspace_lease_covers_same_deadline_and_artifact_grace(self):
         from launcher import Launcher
         obj = object.__new__(Launcher)

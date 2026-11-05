@@ -118,6 +118,16 @@ class Launcher:
             raise Stopped()
         return max(1, math.ceil(self.deadline - time.monotonic()))
 
+    def agent_seconds(self):
+        # Keep final command time and collection headroom inside the original job.
+        remaining = self.remaining()
+        count = len(self.profile["repositories"][self.job["repository"]]["commands"])
+        reserve = count * self.b["command_seconds"] + 15
+        if remaining <= reserve:
+            raise Rejected("insufficient_finalization_budget")
+        self.agent_deadline = time.monotonic() + remaining - reserve
+        return remaining - reserve
+
     def write(self, name, value):
         data = canonical(value) if not isinstance(value, bytes) else value
         path = self.artifacts / name
@@ -395,11 +405,18 @@ class Launcher:
         repo = self.profile["repositories"][self.job["repository"]]
         if len(self.records) >= 8:
             raise Rejected("command_count_budget")
+        if not validation and len(self.records) >= 8 - len(repo["commands"]):
+            return {"success": False, "output": "", "error": "Coding command budget exhausted"}
         if command_id not in repo["commands"] or command_id not in COMMANDS:
             raise Rejected("command_denied")
         self.sequence += 1
         name = self.prefix + "-exec-" + str(self.sequence)
         seconds = min(self.b["command_seconds"], self.remaining())
+        if not validation and hasattr(self, "agent_deadline"):
+            available = self.agent_deadline - time.monotonic()
+            if available <= 0:
+                raise Rejected("agent_time_budget_exhausted")
+            seconds = min(seconds, max(1, math.ceil(available)))
         start = time.monotonic()
         before = sha(canonical(self.snapshot()))
         record = {
@@ -647,7 +664,7 @@ class Launcher:
                     "inference_url": "http://" + address + ":3030/v1",
                     "commands": repo["commands"],
                     "max_tool_calls": self.b["tool_calls"],
-                    "max_seconds": self.remaining(),
+                    "max_seconds": self.agent_seconds(),
                     **({"writable_paths": repo["allowed_paths"]} if "allowed_paths" in repo else {}),
                     **({"seeded_workspace": True} if self.initial_files is not None else {}),
                 },
@@ -747,6 +764,8 @@ class Launcher:
         try:
             while True:
                 self.remaining()
+                if time.monotonic() >= self.agent_deadline:
+                    raise Rejected("agent_time_budget_exhausted")
                 if not selector.select(0.05):
                     if child.poll() is not None:
                         break
@@ -798,13 +817,21 @@ class Launcher:
                     )
                     child.stdin.flush()
             child.wait(timeout=2)
-            if child.returncode != 0 or not self.agent:
-                raise Rejected("agent_interrupted")
+            self.accept_agent_exit(child.returncode)
         finally:
             selector.close()
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=3)
+
+    def accept_agent_exit(self, returncode):
+        if not self.agent:
+            raise Rejected("agent_interrupted")
+        if returncode != 0:
+            # A structured failure remains useful evidence. A nonzero process can
+            # never claim completion, even if its final record claimed otherwise.
+            self.agent["finished"] = False
+            self.agent["error"] = "internal_failure"
 
     def stop_containers(self, keep_holder=False):
         try:
@@ -896,7 +923,14 @@ class Launcher:
             self.workspace = final
             if not self.agent.get("finished"):
                 reason = (
-                    "policy_denied" if self.agent.get("denied") else "agent_incomplete"
+                    "policy_denied" if self.agent.get("denied") else {
+                        "internal_failure": "agent_internal_failure",
+                        "agent_failure": "agent_failure",
+                        "turn_budget_exhausted": "agent_turn_budget_exhausted",
+                        "tool_budget_exhausted": "agent_tool_budget_exhausted",
+                        "command_budget_exhausted": "agent_command_budget_exhausted",
+                        "time_budget_exhausted": "agent_time_budget_exhausted",
+                    }.get(self.agent.get("error"), "agent_incomplete")
                 )
             else:
                 passed = True
@@ -913,6 +947,8 @@ class Launcher:
                     reason = "final_tests_failed"
                 else:
                     state, reason = "completed", "completed"
+            if reason == "agent_time_budget_exhausted":
+                state = "timed_out"
             patch, files = self.git.diff(self.snapshot())
         except Stopped:
             state = self.stop_reason or "timed_out"
@@ -923,6 +959,8 @@ class Launcher:
                 if isinstance(error, Rejected)
                 else type(error).__name__
             )
+            if reason == "agent_time_budget_exhausted":
+                state = "timed_out"
         finally:
             self.collecting = True
             self.collection_deadline = time.monotonic() + 15

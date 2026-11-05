@@ -6,6 +6,11 @@ import type { ToolDef, ToolResult } from '../tools/types.js';
 
 export const CODING_TOOLS = ['read_file', 'list_files', 'search_files', 'write_file', 'edit_file', 'run_command', 'git_status', 'git_diff'];
 export type RPC = (method: 'run_command' | 'git_status' | 'git_diff', params: Record<string, unknown>) => Promise<ToolResult>;
+export const CODING_POLICY_DENIED = 'Coding workspace policy denied';
+export const CODING_INTERNAL_FAILURE = 'Coding workspace internal failure';
+class PolicyDenied extends Error {}
+class PreconditionFailed extends Error {}
+
 const pathSchema = z.string().min(1).max(240);
 const secretName = /^(?:\.env(?:\..*)?|id_rsa|id_ed25519|credentials|secrets(?:\..*)?)$/i;
 export const writablePathsSchema = z.array(pathSchema.refine(path =>
@@ -15,20 +20,20 @@ export const writablePathsSchema = z.array(pathSchema.refine(path =>
 )).min(1).max(32).refine(paths => new Set(paths).size === paths.length);
 
 export function safePath(root: string, path: string, allowMissing = false): string {
-  if (!/^[a-zA-Z0-9_./ -]+$/.test(path) || path.startsWith('/') || path.endsWith('/')) throw new Error('Workspace-relative path required');
+  if (!/^[a-zA-Z0-9_./ -]+$/.test(path) || path.startsWith('/') || path.endsWith('/')) throw new PolicyDenied('Workspace-relative path required');
   let current = root;
   const parts = path.split('/');
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
-    if (!part || part.startsWith('-') || part === '.' || part === '..' || part.toLowerCase() === '.git' || secretName.test(part)) throw new Error('Protected or escaping path');
+    if (!part || part.startsWith('-') || part === '.' || part === '..' || part.toLowerCase() === '.git' || secretName.test(part)) throw new PolicyDenied('Protected or escaping path');
     current = join(current, part);
     let stat;
     try { stat = lstatSync(current); } catch (error) {
       if (allowMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw error;
     }
-    if (stat.isSymbolicLink() || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))) throw new Error('Links and special files are forbidden');
-    if (i < parts.length - 1 && !stat.isDirectory()) throw new Error('Not a workspace directory');
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1))) throw new PolicyDenied('Links and special files are forbidden');
+    if (i < parts.length - 1 && !stat.isDirectory()) throw new PreconditionFailed('Not a workspace directory');
   }
   return current;
 }
@@ -39,26 +44,42 @@ export function codingTools(root: string, commands: string[], rpc: RPC, writable
   // operation, including the complete executor lifetime, so hostile test code cannot
   // race an agent read/write after path validation.
   let tail: Promise<unknown> = Promise.resolve();
+  let terminal: string | undefined;
   const tool = (name: string, description: string, schema: z.ZodObject<any>, execute: ToolDef['execute']): ToolDef => ({
     name, description, schema, timeoutMs: null, verifiesWorkspace: name === 'run_command',
     execute(params) {
       const pending = tail.then(async () => {
-        try { return await execute(params); }
-        catch { return { success: false, output: '', error: 'Coding workspace operation rejected' }; }
+        if (terminal) return { success: false, output: '', error: terminal };
+        try {
+          const result = await execute(params);
+          if (result.error === CODING_POLICY_DENIED) terminal = result.error;
+          return result;
+        } catch (error) {
+          const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
+          const message = error instanceof PolicyDenied ? CODING_POLICY_DENIED
+            : error instanceof PreconditionFailed ? error.message
+            : missing ? 'Workspace file does not exist; inspect the current files and retry' : CODING_INTERNAL_FAILURE;
+          if (message === CODING_POLICY_DENIED || message === CODING_INTERNAL_FAILURE) terminal = message;
+          return { success: false, output: '', error: message };
+        }
       });
       tail = pending.catch(() => undefined); return pending;
     },
   });
   const read = (path: string) => {
     const p = safePath(root, path); const stat = lstatSync(p);
-    if (!stat.isFile() || stat.size > 262144) throw new Error('Bounded regular file required');
+    if (!stat.isFile() || stat.size > 262144) throw new PreconditionFailed('Bounded regular file required');
     const fd = openSync(p, constants.O_RDONLY | constants.O_NOFOLLOW);
     try { return readFileSync(fd, 'utf8'); } finally { closeSync(fd); }
   };
+  const checkWrite = (path: string) => {
+    if (writable !== undefined && !writable.has(path)) throw new PolicyDenied('Project write path denied');
+    safePath(root, path, true);
+  };
   const write = (path: string, content: string) => {
-    if (writable !== undefined && !writable.has(path)) throw new Error('Project write path denied');
+    checkWrite(path);
     const p = safePath(root, path, true);
-    if (Buffer.byteLength(content) > 262144) throw new Error('File too large');
+    if (Buffer.byteLength(content) > 262144) throw new PreconditionFailed('File too large');
     mkdirSync(dirname(p), { recursive: true });
     safePath(root, path, true);
     const tmp = p + '.coding-next'; safePath(root, path + '.coding-next', true);
@@ -74,7 +95,7 @@ export function codingTools(root: string, commands: string[], rpc: RPC, writable
         safePath(root, name);
         if (entry.isDirectory()) visit(name);
         else result.push(name);
-        if (result.length > 512) throw new Error('File inventory limit exceeded');
+        if (result.length > 512) throw new PreconditionFailed('File inventory limit exceeded');
       }
     };
     visit(); return result.sort();
@@ -94,12 +115,13 @@ export function codingTools(root: string, commands: string[], rpc: RPC, writable
     }),
     tool('write_file', 'Create or replace a workspace file. No links, host paths or Git metadata.', z.object({ path: pathSchema, content: z.string().max(262144) }).strict(), async p => { write(String(p.path), String(p.content)); return { success: true, output: 'Workspace file written' }; }),
     tool('edit_file', 'Replace one exact, unique literal occurrence in a workspace file.', z.object({ path: pathSchema, old_string: z.string().min(1).max(262144), new_string: z.string().max(262144) }).strict(), async p => {
+      checkWrite(String(p.path));
       const old = read(String(p.path)), match = String(p.old_string);
-      if (old.split(match).length !== 2) throw new Error('Unique exact match required');
+      if (old.split(match).length !== 2) throw new PreconditionFailed('Unique exact match required');
       write(String(p.path), old.replace(match, String(p.new_string))); return { success: true, output: 'Workspace file edited' };
     }),
     tool('run_command', 'Run a server-approved test profile in a separate networkless container. Available IDs: ' + commands.join(', '), z.object({ command_id: z.string().min(1).max(64) }).strict(), async p => {
-      if (!commands.includes(String(p.command_id))) return { success: false, output: '', error: 'Command profile denied' };
+      if (!commands.includes(String(p.command_id))) return { success: false, output: '', error: CODING_POLICY_DENIED };
       return rpc('run_command', p);
     }),
     tool('git_status', 'Inspect actual local Git status against the exact base; no Git arguments or mutations.', z.object({}).strict(), async () => rpc('git_status', {})),

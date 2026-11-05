@@ -16,34 +16,61 @@ function harness(rpc = async () => ({ success: true, output: 'real process recor
   return { root, registry, close: () => rmSync(root, { recursive: true, force: true }) };
 }
 describe('isolated coding tools reuse policy execution boundary', () => {
-  it('enforces exact enrolled writes while allowing bounded reads of protected repository files', async () => {
+  it('allows enrolled writes and bounded reads of protected files', async () => {
     const h = harness(undefined, ['app.py', 'src/new.py']);
     try {
       mkdirSync(join(h.root, 'tests'));
       writeFileSync(join(h.root, 'README.md'), 'protected requirements');
       writeFileSync(join(h.root, 'tests/test_app.py'), 'protected test');
       writeFileSync(join(h.root, 'app.py'), 'return a - b');
-      for (const path of ['README.md', 'tests/test_app.py', 'app.py.bak', 'app.py.coding-next', './app.py', 'src/../app.py']) {
-        expect((await h.registry.execute('write_file', { path, content: 'unauthorized' })).success).toBe(false);
-      }
-      expect((await h.registry.execute('edit_file', { path: 'tests/test_app.py', old_string: 'protected test', new_string: 'pass' })).success).toBe(false);
       expect((await h.registry.execute('read_file', { path: 'README.md' })).output).toBe('protected requirements');
       expect((await h.registry.execute('read_file', { path: 'tests/test_app.py' })).output).toBe('protected test');
       expect((await h.registry.execute('edit_file', { path: 'app.py', old_string: 'a - b', new_string: 'a + b' })).success).toBe(true);
       expect((await h.registry.execute('write_file', { path: 'src/new.py', content: 'allowed source' })).success).toBe(true);
       expect(readFileSync(join(h.root, 'app.py'), 'utf8')).toBe('return a + b');
-      expect(readFileSync(join(h.root, 'tests/test_app.py'), 'utf8')).toBe('protected test');
-      expect(readFileSync(join(h.root, 'README.md'), 'utf8')).toBe('protected requirements');
       expect((await h.registry.execute('list_files', {})).output).not.toContain('.coding-next');
-      symlinkSync('tests/test_app.py', join(h.root, 'alias.py'));
-      expect((await h.registry.execute('write_file', { path: 'alias.py', content: 'bad' })).success).toBe(false);
-      rmSync(join(h.root, 'app.py'));
-      symlinkSync('tests/test_app.py', join(h.root, 'app.py'));
-      expect((await h.registry.execute('write_file', { path: 'app.py', content: 'bad' })).success).toBe(false);
-      rmSync(join(h.root, 'app.py'));
-      linkSync(join(h.root, 'tests/test_app.py'), join(h.root, 'app.py'));
-      expect((await h.registry.execute('write_file', { path: 'app.py', content: 'bad' })).success).toBe(false);
-      expect(readFileSync(join(h.root, 'tests/test_app.py'), 'utf8')).toBe('protected test');
+    } finally { h.close(); }
+  });
+  it.each(['README.md', 'tests/test_app.py', 'app.py.bak', 'app.py.coding-next', './app.py', 'src/../app.py'])('terminally denies unenrolled mutation %s before matching', async path => {
+    const h = harness(undefined, ['app.py']);
+    try {
+      mkdirSync(join(h.root, 'tests'));
+      writeFileSync(join(h.root, 'README.md'), 'protected');
+      writeFileSync(join(h.root, 'tests/test_app.py'), 'protected');
+      writeFileSync(join(h.root, 'app.py'), 'original');
+      const denied = h.registry.execute('edit_file', { path, old_string: 'absent', new_string: 'bad' });
+      const queued = h.registry.execute('write_file', { path: 'app.py', content: 'must not run' });
+      expect((await denied).error).toBe('Coding workspace policy denied');
+      expect((await queued).error).toBe('Coding workspace policy denied');
+      expect(readFileSync(join(h.root, 'app.py'), 'utf8')).toBe('original');
+      expect(readFileSync(join(h.root, 'tests/test_app.py'), 'utf8')).toBe('protected');
+    } finally { h.close(); }
+  });
+  it.each(['symlink', 'hardlink'])('denies enrolled %s mutation', async kind => {
+    const h = harness(undefined, ['app.py']);
+    try {
+      writeFileSync(join(h.root, 'protected.py'), 'protected');
+      (kind === 'symlink' ? symlinkSync : linkSync)(join(h.root, 'protected.py'), join(h.root, 'app.py'));
+      expect((await h.registry.execute('write_file', { path: 'app.py', content: 'bad' })).error).toBe('Coding workspace policy denied');
+      expect(readFileSync(join(h.root, 'protected.py'), 'utf8')).toBe('protected');
+    } finally { h.close(); }
+  });
+  it('recovers from missing files and ambiguous edits without granting extra authority', async () => {
+    const h = harness(undefined, ['app.py']);
+    try {
+      expect((await h.registry.execute('read_file', { path: 'missing.py' })).error).toContain('does not exist');
+      writeFileSync(join(h.root, 'app.py'), 'same same');
+      expect((await h.registry.execute('edit_file', { path: 'app.py', old_string: 'same', new_string: 'bad' })).error).toBe('Unique exact match required');
+      expect((await h.registry.execute('edit_file', { path: 'app.py', old_string: 'absent', new_string: 'bad' })).error).toBe('Unique exact match required');
+      expect((await h.registry.execute('edit_file', { path: 'app.py', old_string: 'same same', new_string: 'correct' })).success).toBe(true);
+      expect(readFileSync(join(h.root, 'app.py'), 'utf8')).toBe('correct');
+    } finally { h.close(); }
+  });
+  it('sanitizes unexpected failures and stops queued workspace operations', async () => {
+    const h = harness(async () => { throw new Error('private host detail'); });
+    try {
+      expect((await h.registry.execute('run_command', { command_id: 'python_unittest' })).error).toBe('Coding workspace internal failure');
+      expect((await h.registry.execute('write_file', { path: 'new.py', content: 'bad' })).error).toBe('Coding workspace internal failure');
     } finally { h.close(); }
   });
   it.each([[], ['app.py', 'app.py'], ['*.py'], ['/app.py'], ['src/../app.py'], ['src//app.py'], ['tests/'], ['.git/config'], ['.env'], ['app.py.coding-next'], ['app.py\n'], ['x'.repeat(241)], Array.from({ length: 33 }, (_, i) => `file${i}.py`)].map(paths => [paths]))('rejects malformed protected write policy %j', paths => {
