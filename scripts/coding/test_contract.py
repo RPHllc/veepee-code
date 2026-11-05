@@ -478,12 +478,16 @@ class ExtendedRuntimeDeadlines(unittest.TestCase):
         obj.job = {"repository": "fixture"}
         obj.profile = {"repositories": {"fixture": {"commands": ["python_unittest", "python_syntax"]}}}
         obj.b = {"command_seconds": 30}
-        for remaining in (5, 60, 180, 600):
+        for remaining in (180, 600):
             obj.remaining = lambda: remaining
             seconds = obj.agent_seconds()
             self.assertGreaterEqual(seconds, 1)
             self.assertLess(seconds, remaining)
-            self.assertLessEqual(seconds + min(75, max(1, remaining // 4)), remaining)
+            self.assertEqual(seconds + 75, remaining)
+        for remaining in (5, 60, 75):
+            obj.remaining = lambda: remaining
+            with self.assertRaisesRegex(Rejected, "insufficient_finalization_budget"):
+                obj.agent_seconds()
         obj.remaining = lambda: 600
         self.assertEqual(obj.agent_seconds(), 525)
 

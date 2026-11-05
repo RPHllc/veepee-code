@@ -483,10 +483,11 @@ class Test(unittest.TestCase):
         self.assertEqual(r["state"], "failed")
         self.assertTrue(r["execution_stopped"])
 
-    def test_08_job_deadline_and_no_surviving_containers(self):
+    def test_08_insufficient_finalization_budget_and_no_surviving_containers(self):
         self.setup_job("CASE:hang", budgets={"wall_seconds": 12})
         r = self.run_job()
-        self.assertEqual(r["state"], "timed_out", r)
+        self.assertEqual(r["state"], "failed", r)
+        self.assertEqual(r["termination_reason"], "insufficient_finalization_budget", r)
         self.assertTrue(r["execution_stopped"])
 
     def test_09_cancel_running_job_and_replay_fence(self):

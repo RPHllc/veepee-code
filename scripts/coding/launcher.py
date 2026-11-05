@@ -122,8 +122,11 @@ class Launcher:
         # Keep final command time and collection headroom inside the original job.
         remaining = self.remaining()
         count = len(self.profile["repositories"][self.job["repository"]]["commands"])
-        reserve = min(count * self.b["command_seconds"] + 15, max(1, remaining // 4))
-        return max(1, remaining - reserve)
+        reserve = count * self.b["command_seconds"] + 15
+        if remaining <= reserve:
+            raise Rejected("insufficient_finalization_budget")
+        self.agent_deadline = time.monotonic() + remaining - reserve
+        return remaining - reserve
 
     def write(self, name, value):
         data = canonical(value) if not isinstance(value, bytes) else value
@@ -409,6 +412,11 @@ class Launcher:
         self.sequence += 1
         name = self.prefix + "-exec-" + str(self.sequence)
         seconds = min(self.b["command_seconds"], self.remaining())
+        if not validation and hasattr(self, "agent_deadline"):
+            available = self.agent_deadline - time.monotonic()
+            if available <= 0:
+                raise Rejected("agent_time_budget_exhausted")
+            seconds = min(seconds, max(1, math.ceil(available)))
         start = time.monotonic()
         before = sha(canonical(self.snapshot()))
         record = {
@@ -756,6 +764,8 @@ class Launcher:
         try:
             while True:
                 self.remaining()
+                if time.monotonic() >= self.agent_deadline:
+                    raise Rejected("agent_time_budget_exhausted")
                 if not selector.select(0.05):
                     if child.poll() is not None:
                         break
@@ -928,6 +938,8 @@ class Launcher:
                     reason = "final_tests_failed"
                 else:
                     state, reason = "completed", "completed"
+            if reason == "agent_time_budget_exhausted":
+                state = "timed_out"
             patch, files = self.git.diff(self.snapshot())
         except Stopped:
             state = self.stop_reason or "timed_out"
@@ -938,6 +950,8 @@ class Launcher:
                 if isinstance(error, Rejected)
                 else type(error).__name__
             )
+            if reason == "agent_time_budget_exhausted":
+                state = "timed_out"
         finally:
             self.collecting = True
             self.collection_deadline = time.monotonic() + 15
