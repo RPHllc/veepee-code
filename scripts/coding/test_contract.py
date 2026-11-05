@@ -472,6 +472,21 @@ class ExtendedRuntimeDeadlines(unittest.TestCase):
                 runpy.run_path(str(script))
             rules.assert_not_called(); execute.assert_not_called()
 
+    def test_agent_budget_reserves_validation_and_sealing_without_increasing_deadline(self):
+        from launcher import Launcher
+        obj = object.__new__(Launcher)
+        obj.job = {"repository": "fixture"}
+        obj.profile = {"repositories": {"fixture": {"commands": ["python_unittest", "python_syntax"]}}}
+        obj.b = {"command_seconds": 30}
+        for remaining in (5, 60, 180, 600):
+            obj.remaining = lambda: remaining
+            seconds = obj.agent_seconds()
+            self.assertGreaterEqual(seconds, 1)
+            self.assertLess(seconds, remaining)
+            self.assertLessEqual(seconds + min(75, max(1, remaining // 4)), remaining)
+        obj.remaining = lambda: 600
+        self.assertEqual(obj.agent_seconds(), 525)
+
     def test_workspace_lease_covers_same_deadline_and_artifact_grace(self):
         from launcher import Launcher
         obj = object.__new__(Launcher)

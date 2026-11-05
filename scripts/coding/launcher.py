@@ -118,6 +118,13 @@ class Launcher:
             raise Stopped()
         return max(1, math.ceil(self.deadline - time.monotonic()))
 
+    def agent_seconds(self):
+        # Keep final command time and collection headroom inside the original job.
+        remaining = self.remaining()
+        count = len(self.profile["repositories"][self.job["repository"]]["commands"])
+        reserve = min(count * self.b["command_seconds"] + 15, max(1, remaining // 4))
+        return max(1, remaining - reserve)
+
     def write(self, name, value):
         data = canonical(value) if not isinstance(value, bytes) else value
         path = self.artifacts / name
@@ -395,6 +402,8 @@ class Launcher:
         repo = self.profile["repositories"][self.job["repository"]]
         if len(self.records) >= 8:
             raise Rejected("command_count_budget")
+        if not validation and len(self.records) >= 8 - len(repo["commands"]):
+            return {"success": False, "output": "", "error": "Coding command budget exhausted"}
         if command_id not in repo["commands"] or command_id not in COMMANDS:
             raise Rejected("command_denied")
         self.sequence += 1
@@ -647,7 +656,7 @@ class Launcher:
                     "inference_url": "http://" + address + ":3030/v1",
                     "commands": repo["commands"],
                     "max_tool_calls": self.b["tool_calls"],
-                    "max_seconds": self.remaining(),
+                    "max_seconds": self.agent_seconds(),
                     **({"writable_paths": repo["allowed_paths"]} if "allowed_paths" in repo else {}),
                     **({"seeded_workspace": True} if self.initial_files is not None else {}),
                 },
@@ -896,7 +905,13 @@ class Launcher:
             self.workspace = final
             if not self.agent.get("finished"):
                 reason = (
-                    "policy_denied" if self.agent.get("denied") else "agent_incomplete"
+                    "policy_denied" if self.agent.get("denied") else {
+                        "internal_failure": "agent_internal_failure",
+                        "turn_budget_exhausted": "agent_turn_budget_exhausted",
+                        "tool_budget_exhausted": "agent_tool_budget_exhausted",
+                        "command_budget_exhausted": "agent_command_budget_exhausted",
+                        "time_budget_exhausted": "agent_time_budget_exhausted",
+                    }.get(self.agent.get("error"), "agent_incomplete")
                 )
             else:
                 passed = True

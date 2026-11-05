@@ -1292,6 +1292,7 @@ export class Agent {
         this.abortController = null;
         return;
       }
+      const codingFinalTurn = this.registry.policy?.role === 'coding' && turn === turnLimit - 1;
       // Check if model should switch (only after the first turn of a message)
       if (turn > 0) {
         const signals = this.context.getSignals();
@@ -1425,6 +1426,10 @@ export class Agent {
         // Filter tools for API requests with client-constrained tool sets
         if (allowedTools) {
           tools = tools.filter(t => allowedTools.has(t.function?.name || ''));
+        }
+        if (codingFinalTurn) {
+          tools = [];
+          messages.push({ role: 'user', content: 'This is the final reserved coding turn within the existing turn limit. No tools are available. Give a concise final account of changes and actual observed tests. State unfinished work honestly; trusted final validation will run independently.' });
         }
         if (this.registry.policy && this.registry.remainingPolicyCalls === 0) {
           tools = [];
@@ -1771,6 +1776,12 @@ export class Agent {
         yield { type: 'text', content: heldText };
       }
 
+      if (codingFinalTurn && toolCalls.length > 0) {
+        yield { type: 'error', error: 'Coding finalization turn attempted tools; turn budget exhausted' };
+        this.abortController = null;
+        return;
+      }
+
       // Add assistant message to context
       this.context.addAssistant(fullContent, toolCalls.length > 0 ? toolCalls : undefined);
 
@@ -1797,7 +1808,7 @@ export class Agent {
         }
         // Daily-driver #1 (self-repair): changed code but never ran it -> force a
         // verify-and-fix turn rather than shipping an unverified edit.
-        if (shouldForceVerify({ mode: this.mode, codeChangedUnverified, alreadyForced: forcedVerifyOnce })) {
+        if (!codingFinalTurn && shouldForceVerify({ mode: this.mode, codeChangedUnverified, alreadyForced: forcedVerifyOnce })) {
           forcedVerifyOnce = true;
           this.context.addUser(FORCE_VERIFY_NUDGE);
           yield { type: 'info', content: 'Nudged: verify your code change before finishing' };

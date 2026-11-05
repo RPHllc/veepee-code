@@ -13,7 +13,7 @@ import { ToolRegistry } from '../src/tools/registry.js';
 import { WorkerPolicy } from '../src/worker-policy.js';
 
 /** Real Agent + isolated workspace tools; only model inference is synthetic. */
-async function runTools(role: string, toolTurns: number, successful = true, repeat = false, batchSize = 1, isolatedPrompt = 'Inspect the isolated workspace using supplied tools.') {
+async function runTools(role: string, toolTurns: number, successful = true, repeat = false, batchSize = 1, isolatedPrompt = 'Inspect the isolated workspace using supplied tools.', honorFinal = false) {
   const root = mkdtempSync(join(tmpdir(), 'coding-progress-'));
   for (let i = 0; i < 48; i++) writeFileSync(join(root, `file${i}.txt`), `Observed file ${i}`);
   let requests = 0;
@@ -25,7 +25,7 @@ async function runTools(role: string, toolTurns: number, successful = true, repe
     let body = ''; for await (const chunk of req) body += chunk;
     systemPrompts.push(JSON.parse(body).messages.find((m: { role: string }) => m.role === 'system')?.content ?? '');
     const turn = requests++;
-    const done = turn >= toolTurns;
+    const done = turn >= toolTurns || (honorFinal && !JSON.parse(body).tools?.length);
     const delta = done ? { content: 'Inspection complete' } : {
       tool_calls: Array.from({ length: batchSize }, (_, index) => ({
         index, id: `call_${turn}_${index}`, type: 'function', function: {
@@ -106,8 +106,15 @@ describe('coding tool-only progress within unchanged worker ceilings', () => {
   it('still stops coding at twenty total turns with productive tools', async () => {
     const result = await runTools('coding', 21);
     expect(result.requests).toBe(20);
-    expect(result.diagnostics.actual_tool_calls).toBe(20);
-    expect(result.events.some(e => e.type === 'error' && e.error?.includes('20 turns on one message'))).toBe(true);
+    expect(result.diagnostics.actual_tool_calls).toBe(19);
+    expect(result.events.some(e => e.type === 'error' && e.error?.includes('turn budget exhausted'))).toBe(true);
+  });
+  it('reserves a tool-free normal completion turn inside the unchanged twenty-turn bound', async () => {
+    const result = await runTools('coding', 21, true, false, 1, 'Inspect files.', true);
+    expect(result.requests).toBe(20);
+    expect(result.diagnostics.actual_tool_calls).toBe(19);
+    expect(result.events.some(e => e.type === 'done')).toBe(true);
+    expect(result.events.filter(e => e.type === 'error')).toEqual([]);
   });
   it('still stops repeated identical successful coding calls', async () => {
     const result = await runTools('coding', 16, true, true);

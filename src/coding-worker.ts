@@ -8,7 +8,7 @@ import { WorkerPolicy } from './worker-policy.js';
 import { ToolRegistry } from './tools/registry.js';
 import { ModelManager } from './models.js';
 import { PermissionManager } from './permissions.js';
-import { codingTools, CODING_TOOLS, writablePathsSchema, type RPC } from './coding/tools.js';
+import { codingTools, CODING_TOOLS, CODING_POLICY_DENIED, CODING_INTERNAL_FAILURE, writablePathsSchema, type RPC } from './coding/tools.js';
 
 const inputSchema = z.object({
   instructions: z.string().min(1).max(8000),
@@ -65,9 +65,11 @@ async function main() {
     if (event.kind === 'model_turn_finished') timing.output_tokens += Number(event.output_tokens ?? 0);
     if (event.kind === 'model_first_event') timing.first_event_ms.push(Number(event.first_event_ms));
   });
-  const timer = setTimeout(() => agent.abort(), policy.deadlineMs);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; agent.abort(); }, policy.deadlineMs);
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => agent.abort());
   let done = false, error = false, denied = false, output = '';
+  let outcome: string | undefined;
   const events: unknown[] = [];
   try {
     for await (const event of agent.run(input.instructions, { permissionMode: 'auto_allow' })) {
@@ -76,13 +78,17 @@ async function main() {
       if (event.type === 'error') error = true;
       if (event.type === 'permission_denied') denied = true;
       if (['tool_call', 'tool_result'].includes(event.type) && event.name && !policy.allows(event.name)) denied = true;
-      if (event.type === 'tool_result' && ['Coding workspace operation rejected', 'Command profile denied'].includes(event.error ?? '')) denied = true;
+      if (event.type === 'tool_result' && event.error === CODING_POLICY_DENIED) denied = true;
+      if (event.type === 'tool_result' && event.error === CODING_INTERNAL_FAILURE) { error = true; outcome = 'internal_failure'; }
+      if (event.type === 'error') outcome = timedOut ? 'time_budget_exhausted' : /turns on one message|turn budget exhausted/.test(event.error ?? '') ? 'turn_budget_exhausted' : 'agent_failure';
+      if (event.type === 'tool_result' && ['Coding command budget exhausted', 'Worker tool-call budget exhausted'].includes(event.error ?? '')) { error = true; outcome = event.error?.startsWith('Coding command') ? 'command_budget_exhausted' : 'tool_budget_exhausted'; }
       if (events.length < 100 && ['tool_call', 'tool_result', 'done', 'error', 'permission_denied'].includes(event.type)) {
         events.push({ type: event.type, name: event.name, success: event.success, error: event.error?.slice(0, 300) });
       }
+      if (denied || error) { agent.abort(); break; }
     }
   } finally { clearTimeout(timer); }
-  emit({ type: 'agent_result', finished: done && !error && !denied, denied, output, events, diagnostics: { ...registry.diagnostics, ...timing } });
+  emit({ type: 'agent_result', finished: done && !error && !denied, denied, ...(outcome ? { error: outcome } : {}), output, events, diagnostics: { ...registry.diagnostics, ...timing } });
   lines.close(); process.stdin.destroy();
 }
 main().catch(() => { emit({ type: 'agent_result', finished: false, denied: false, error: 'coding_agent_failed' }); process.exitCode = 1; lines.close(); process.stdin.destroy(); });

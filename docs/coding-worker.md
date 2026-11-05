@@ -210,3 +210,14 @@ distinguishes it from deterministic tests. No research image pin is changed.
 
 See [the proposed Phase 5B-B interface](coding-job-v1.md#proposed-phase-5b-b-interface).
 Do not merge/deploy this candidate or start Conductor integration from this PR.
+
+## Phase 5I recovery candidate
+
+Coding workspace tools distinguish recoverable missing-file/edit preconditions from
+terminal protected-path/command denials and sanitized internal failures. A terminal
+workspace outcome fences queued operations; the worker stops without accepting later
+passes as recovery from a genuine denial. The final coding model turn is tool-free
+within the existing20-turn ceiling; unsolicited tools on that turn fail closed.
+The launcher reserves final-validation command slots within the existing eight and
+wall time within the original deadline. It never treats turn/time exhaustion as
+success. Trusted tests still bind the exact final tree before immutable sealing.
