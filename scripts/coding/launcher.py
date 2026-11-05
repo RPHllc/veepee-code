@@ -817,13 +817,21 @@ class Launcher:
                     )
                     child.stdin.flush()
             child.wait(timeout=2)
-            if child.returncode != 0 or not self.agent:
-                raise Rejected("agent_interrupted")
+            self.accept_agent_exit(child.returncode)
         finally:
             selector.close()
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=3)
+
+    def accept_agent_exit(self, returncode):
+        if not self.agent:
+            raise Rejected("agent_interrupted")
+        if returncode != 0:
+            # A structured failure remains useful evidence. A nonzero process can
+            # never claim completion, even if its final record claimed otherwise.
+            self.agent["finished"] = False
+            self.agent["error"] = "internal_failure"
 
     def stop_containers(self, keep_holder=False):
         try:
